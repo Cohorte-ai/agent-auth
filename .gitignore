@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+.env
+.DS_Store
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.agent_auth/
+site/

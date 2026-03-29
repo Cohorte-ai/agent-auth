@@ -1,0 +1,195 @@
+# Enterprise agent-auth configuration
+# Full-featured config showcasing every capability:
+# roles with inheritance, agent profiles with deny lists, approval tiers,
+# delegation rules, A2A authorization, sessions, and audit logging.
+
+version: "1.0"
+
+metadata:
+  name: acme-corp-prod
+  description: Production auth policy for ACME Corp AI agent fleet
+  author: platform-team@acme.corp
+
+variables:
+  env: production
+  max_agents: "50"
+
+# ──────────────────────────────────────────────
+# Roles — hierarchical permission sets
+# ──────────────────────────────────────────────
+roles:
+  viewer:
+    actions:
+      - read
+      - list
+    description: Read-only access to resources
+
+  editor:
+    extends: viewer
+    actions:
+      - write
+      - update
+    description: Can modify resources
+
+  deployer:
+    extends: editor
+    actions:
+      - deploy
+      - rollback
+    description: Can deploy and rollback services
+
+  admin:
+    extends: deployer
+    actions:
+      - delete
+      - manage_agents
+      - manage_roles
+    description: Full administrative access
+
+# ──────────────────────────────────────────────
+# Agent profiles — identity + constraints
+# ──────────────────────────────────────────────
+profiles:
+  copilot:
+    role: editor
+    allow: []
+    deny:
+      - write
+    scopes:
+      - "project:*"
+    default_tier: autonomous
+    description: Developer copilot — read only on projects (write denied)
+
+  code-reviewer:
+    role: viewer
+    allow: []
+    deny: []
+    scopes:
+      - "repo:*"
+    default_tier: autonomous
+    description: Code review agent — read-only across all repositories
+
+  deploy-bot:
+    role: deployer
+    allow: []
+    deny: []
+    scopes:
+      - "deploy:*"
+    default_tier: soft
+    description: Deployment agent — can deploy (needs soft approval by default)
+
+  security-scanner:
+    role: viewer
+    allow:
+      - scan
+    deny: []
+    scopes: []
+    default_tier: autonomous
+    description: Security scanner — global read + scan access
+
+  admin-bot:
+    role: admin
+    allow: []
+    deny: []
+    scopes: []
+    default_tier: strong
+    description: Administrative agent — full access (needs strong approval by default)
+
+# ──────────────────────────────────────────────
+# Approval policies — three-tier model
+# ──────────────────────────────────────────────
+approval_policies:
+  - name: prod_deploy
+    condition: 'action == "deploy" and resource starts_with "/prod"'
+    tier: strong
+    description: Production deploys require strong (human) approval
+
+  - name: staging_deploy
+    condition: 'action == "deploy" and resource starts_with "/staging"'
+    tier: soft
+    description: Staging deploys need soft (supervisor) approval
+
+  - name: destructive
+    condition: 'action == "delete" or action == "rollback"'
+    tier: strong
+    description: Destructive operations always require strong approval
+
+# ──────────────────────────────────────────────
+# Delegation — temporary permission grants
+# ──────────────────────────────────────────────
+delegation:
+  enabled: true
+  default_duration: 3600    # 1 hour
+  max_duration: 86400       # 24 hours
+  rules:
+    - name: admin-delegation
+      allowed_actions:
+        - read
+        - write
+        - deploy
+      max_duration: 86400
+      description: Admins can delegate for up to 24 hours
+
+    - name: editor-delegation
+      allowed_actions:
+        - read
+        - write
+      max_duration: 14400     # 4 hours
+      description: Editors can only delegate read/write for 4 hours
+
+# ──────────────────────────────────────────────
+# A2A — agent-to-agent authorization
+# ──────────────────────────────────────────────
+a2a:
+  default: deny
+  policies:
+    - name: copilot-to-reviewer
+      from_agent: copilot
+      to_agent: code-reviewer
+      action: read
+      effect: allow
+      description: Copilot can request code reviews
+
+    - name: copilot-deploy-deny
+      from_agent: copilot
+      to_agent: deploy-bot
+      action: deploy
+      effect: deny
+      description: Copilot cannot trigger deploys directly
+
+    - name: deploy-to-scanner
+      from_agent: deploy-bot
+      to_agent: security-scanner
+      action: scan
+      effect: allow
+      description: Deploy bot can invoke security scans before deploy
+
+    - name: admin-wildcard
+      from_agent: admin-bot
+      to_agent: "*"
+      action: "*"
+      effect: allow
+      description: Admin bot can interact with any agent
+
+    - name: any-to-scanner
+      from_agent: "*"
+      to_agent: security-scanner
+      action: read
+      effect: allow
+      description: Any agent can invoke security scanner reads
+
+# ──────────────────────────────────────────────
+# Sessions — scope-bound, time-limited
+# ──────────────────────────────────────────────
+sessions:
+  default_duration: 3600     # 1 hour
+  max_duration: 86400        # 24 hours
+  cleanup_interval: 300      # 5 minutes
+
+# ──────────────────────────────────────────────
+# Audit — JSONL logging
+# ──────────────────────────────────────────────
+audit:
+  enabled: true
+  path: .agent_auth/audit.jsonl
+  retention_days: 90

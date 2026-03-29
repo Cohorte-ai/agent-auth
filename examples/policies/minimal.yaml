@@ -1,0 +1,34 @@
+# Minimal agent-auth configuration
+# Two roles, one profile, one approval policy — the simplest valid config.
+
+version: "1.0"
+
+metadata:
+  name: minimal-config
+  description: Bare-minimum auth policy for a single agent
+
+roles:
+  viewer:
+    actions:
+      - read
+    description: Read-only access
+
+  editor:
+    extends: viewer
+    actions:
+      - write
+    description: Read and write access
+
+profiles:
+  assistant:
+    role: editor
+    allow: []
+    deny: []
+    scopes: []
+    description: General-purpose assistant with editor privileges
+
+approval_policies:
+  - name: destructive
+    condition: 'action == "delete"'
+    tier: strong
+    description: Deletes need strong (human) approval
