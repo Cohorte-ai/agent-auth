@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
+import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from theaios.agent_auth.types import Session
+
+_logger = logging.getLogger(__name__)
 
 
 class SessionManager:
@@ -35,6 +39,10 @@ class SessionManager:
                 try:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
+                    _logger.warning("Skipping malformed JSON line in sessions file")
+                    continue
+                if not isinstance(entry, dict):
+                    _logger.warning("Skipping non-dict entry in sessions file")
                     continue
                 session = Session(
                     session_id=str(entry.get("session_id", "")),
@@ -48,8 +56,11 @@ class SessionManager:
                 self._sessions[session.session_id] = session
 
     def _save(self) -> None:
-        """Persist all sessions to JSONL file."""
-        with open(self._path, "w", encoding="utf-8") as f:
+        """Persist all sessions to JSONL file (atomic write)."""
+        # Atomic write: write to temp file then rename to prevent corruption
+        with tempfile.NamedTemporaryFile(
+            dir=self._path.parent, mode="w", encoding="utf-8", suffix=".tmp", delete=False
+        ) as f:
             for session in self._sessions.values():
                 entry = {
                     "session_id": session.session_id,
@@ -61,6 +72,8 @@ class SessionManager:
                     "status": session.status,
                 }
                 f.write(json.dumps(entry, default=str) + "\n")
+            temp_path = Path(f.name)
+        temp_path.replace(self._path)
 
     def create(
         self,

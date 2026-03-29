@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import logging
+import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from theaios.agent_auth.types import DelegationConfig, DelegationGrant
+
+_logger = logging.getLogger(__name__)
 
 
 class DelegationManager:
@@ -42,6 +46,10 @@ class DelegationManager:
                 try:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
+                    _logger.warning("Skipping malformed JSON line in delegations file")
+                    continue
+                if not isinstance(entry, dict):
+                    _logger.warning("Skipping non-dict entry in delegations file")
                     continue
                 actions_raw = entry.get("actions", [])
                 actions = [str(a) for a in actions_raw] if isinstance(actions_raw, list) else []
@@ -58,8 +66,11 @@ class DelegationManager:
                 self._grants[grant.delegation_id] = grant
 
     def _save(self) -> None:
-        """Persist all delegation grants to JSONL file."""
-        with open(self._path, "w", encoding="utf-8") as f:
+        """Persist all delegation grants to JSONL file (atomic write)."""
+        # Atomic write: write to temp file then rename to prevent corruption
+        with tempfile.NamedTemporaryFile(
+            dir=self._path.parent, mode="w", encoding="utf-8", suffix=".tmp", delete=False
+        ) as f:
             for grant in self._grants.values():
                 entry = {
                     "delegation_id": grant.delegation_id,
@@ -72,6 +83,8 @@ class DelegationManager:
                     "status": grant.status,
                 }
                 f.write(json.dumps(entry, default=str) + "\n")
+            temp_path = Path(f.name)
+        temp_path.replace(self._path)
 
     def validate_rule(self, actions: list[str], duration: int, reason: str) -> list[str]:
         """Validate a delegation request against configured rules.
