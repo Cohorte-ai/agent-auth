@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -359,7 +358,7 @@ class TestEndToEnd:
         assert d1.allowed is True
 
         # 3. Delegate "deploy" to reviewer
-        grant = engine.create_delegation("alice", "reviewer", ["deploy"], 3600, "deploy assist")
+        engine.create_delegation("alice", "reviewer", ["deploy"], 3600, "deploy assist")
 
         # 4. Reviewer deploys via delegation — allowed but requires approval
         d2 = engine.authorize(AuthRequest(agent="reviewer", user="alice", action="deploy"))
