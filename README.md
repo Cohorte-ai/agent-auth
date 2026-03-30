@@ -1,18 +1,22 @@
-# theaios-agent-auth
+<div align="center">
+  <a href="https://cohorte-ai.github.io/agent-auth/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset=".github/images/TheAIOS-Agent-Auth-darkmode.svg">
+      <source media="(prefers-color-scheme: light)" srcset=".github/images/TheAIOS-Agent-Auth.svg">
+      <img alt="TheAIOS Agent Auth" src=".github/images/TheAIOS-Agent-Auth.svg" width="60%">
+    </picture>
+  </a>
+</div>
 
-<!-- logo placeholder -->
-<p align="center">
-  <img src="https://via.placeholder.com/200x80?text=agent-auth" alt="agent-auth logo" />
-</p>
+<p align="center"><strong>Agent-specific identity and access management for AI agents.</strong></p>
 
 <p align="center">
   <a href="https://pypi.org/project/theaios-agent-auth/"><img src="https://img.shields.io/pypi/v/theaios-agent-auth.svg" alt="PyPI version" /></a>
   <a href="https://pypi.org/project/theaios-agent-auth/"><img src="https://img.shields.io/pypi/pyversions/theaios-agent-auth.svg" alt="Python versions" /></a>
   <a href="https://github.com/Cohorte-ai/agent-auth/actions"><img src="https://img.shields.io/github/actions/workflow/status/Cohorte-ai/agent-auth/ci.yml?label=CI" alt="CI status" /></a>
+  <a href="https://cohorte-ai.github.io/agent-auth/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation" /></a>
   <a href="https://github.com/Cohorte-ai/agent-auth/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
 </p>
-
-<p align="center"><strong>Agent-specific identity and access management for AI agents.</strong></p>
 
 ---
 
