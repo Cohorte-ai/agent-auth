@@ -351,8 +351,11 @@ class TestEndToEnd:
 
         # 2. Authorize read with session — should succeed
         req = AuthRequest(
-            agent="assistant", user="alice", action="read",
-            session_id=sess.session_id, scope="project:alpha",
+            agent="assistant",
+            user="alice",
+            action="read",
+            session_id=sess.session_id,
+            scope="project:alpha",
         )
         d1 = engine.authorize(req)
         assert d1.allowed is True
