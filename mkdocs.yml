@@ -69,5 +69,5 @@ extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/Cohorte-ai/agent-auth
-    - icon: fontawesome/globe
+    - icon: fontawesome/solid/globe
       link: https://theaios.xyz
