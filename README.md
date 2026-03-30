@@ -11,11 +11,10 @@
 <p align="center"><strong>Agent-specific identity and access management for AI agents.</strong></p>
 
 <p align="center">
-  <a href="https://pypi.org/project/theaios-agent-auth/"><img src="https://img.shields.io/pypi/v/theaios-agent-auth.svg" alt="PyPI version" /></a>
-  <a href="https://pypi.org/project/theaios-agent-auth/"><img src="https://img.shields.io/pypi/pyversions/theaios-agent-auth.svg" alt="Python versions" /></a>
-  <a href="https://github.com/Cohorte-ai/agent-auth/actions"><img src="https://img.shields.io/github/actions/workflow/status/Cohorte-ai/agent-auth/ci.yml?label=CI" alt="CI status" /></a>
-  <a href="https://cohorte-ai.github.io/agent-auth/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation" /></a>
-  <a href="https://github.com/Cohorte-ai/agent-auth/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
+  <a href="https://opensource.org/licenses/Apache-2.0" target="_blank"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License"></a>
+  <a href="https://pypi.org/project/theaios-agent-auth/" target="_blank"><img src="https://img.shields.io/pypi/v/theaios-agent-auth" alt="PyPI"></a>
+  <a href="https://cohorte-ai.github.io/agent-auth/" target="_blank"><img src="https://img.shields.io/badge/docs-mkdocs-blue" alt="Docs"></a>
+  <a href="https://x.com/CohorteAI" target="_blank"><img src="https://img.shields.io/twitter/follow/CohorteAI?style=social" alt="Follow @CohorteAI"></a>
 </p>
 
 ---
