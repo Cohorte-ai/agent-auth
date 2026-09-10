@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.1] - 2026-09-10
+
+### Changed
+
+- CI toolchain pinned to verified versions (ruff 0.15.x, mypy 1.19.x, pytest <10)
+- README badges aligned with the theaios suite; docs social icon fixed
+
+---
+
 ## [0.1.0] - 2026-03-29
 
 ### Added
