@@ -1,0 +1,36 @@
+name: Bug report
+description: Something in theaios-agent-auth does not behave as documented.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `pip show theaios-agent-auth | grep Version`
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest config and code that show the problem. Remove secrets and personal data.
+      render: python
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations: { required: true }
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: Python version and OS
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This is about theaios-agent-auth itself, not a third-party product or service.
+          required: true
+        - label: This is not a security vulnerability (those go to the address in SECURITY.md).
+          required: true
