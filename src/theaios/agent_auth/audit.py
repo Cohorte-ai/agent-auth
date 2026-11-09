@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+from theaios.core.audit import JsonlLog
 
 from theaios.agent_auth.types import AuthConfig, AuthDecision, AuthRequest
 
@@ -19,7 +20,7 @@ class AuditLog:
 
     def __init__(self, path: str = ".agent_auth/audit.jsonl") -> None:
         self._path = Path(path)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._log = JsonlLog(self._path)
 
     @property
     def path(self) -> Path:
@@ -54,8 +55,7 @@ class AuditLog:
             entry["config_name"] = config.metadata.name
             entry["config_version"] = config.version
 
-        with open(self._path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, default=str) + "\n")
+        self._log.append(entry)
 
     def read(
         self,
@@ -68,38 +68,22 @@ class AuditLog:
         limit: int = 1000,
     ) -> list[dict[str, object]]:
         """Read audit log entries with optional filters."""
-        if not self._path.exists():
-            return []
 
-        entries: list[dict[str, object]] = []
-        with open(self._path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+        def keep(entry: dict[str, object]) -> bool:
+            if since and str(entry.get("timestamp", "")) < since:
+                return False
+            if agent and entry.get("agent") != agent:
+                return False
+            if user and entry.get("user") != user:
+                return False
+            if action and entry.get("action") != action:
+                return False
+            if allowed is not None and entry.get("allowed") != allowed:
+                return False
+            return True
 
-                if since and entry.get("timestamp", "") < since:
-                    continue
-                if agent and entry.get("agent") != agent:
-                    continue
-                if user and entry.get("user") != user:
-                    continue
-                if action and entry.get("action") != action:
-                    continue
-                if allowed is not None and entry.get("allowed") != allowed:
-                    continue
-
-                entries.append(entry)
-                if len(entries) >= limit:
-                    break
-
-        return entries
+        return self._log.read(keep, limit=limit)
 
     def clear(self) -> None:
         """Clear all audit log entries."""
-        if self._path.exists():
-            self._path.unlink()
+        self._log.clear()

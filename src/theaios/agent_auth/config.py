@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import os
-import re
 from pathlib import Path
 
 import yaml
+from theaios.core.env import interpolate_env, interpolate_recursive
 
 from theaios.agent_auth.types import (
     VALID_A2A_DEFAULTS,
@@ -33,28 +32,14 @@ class ConfigError(Exception):
         super().__init__("Invalid auth config:\n  " + "\n  ".join(errors))
 
 
-_ENV_PATTERN = re.compile(r"\$\{(\w+)\}")
-
-
 def _interpolate_env(value: str) -> str:
-    """Replace ${ENV_VAR} references with environment variable values."""
-
-    def _replace(match: re.Match[str]) -> str:
-        var_name = match.group(1)
-        return os.environ.get(var_name, match.group(0))
-
-    return _ENV_PATTERN.sub(_replace, value)
+    """Replace ${VAR} placeholders (see theaios.core.env)."""
+    return interpolate_env(value)
 
 
 def _interpolate_recursive(obj: object) -> object:
-    """Recursively interpolate environment variables in strings."""
-    if isinstance(obj, str):
-        return _interpolate_env(obj)
-    if isinstance(obj, dict):
-        return {k: _interpolate_recursive(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_interpolate_recursive(item) for item in obj]
-    return obj
+    """Interpolate env vars in every string of a parsed config."""
+    return interpolate_recursive(obj)
 
 
 def load_config(path: str = "agent_auth.yaml") -> AuthConfig:
