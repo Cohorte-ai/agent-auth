@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.3] - 2026-11-09
+
+### Security
+
+- An approval or A2A condition that named an undefined `$variable` (a typo such as `$protectd`) passed validation and was then silently skipped at every evaluation: an action that needed approval ran autonomously, and an A2A deny policy never denied. Such configs are now rejected when they load, with a "did you mean" suggestion. **If your config stops loading after upgrading, it had a policy that never applied.**
+- Conditions using `matches` are rejected too: agent-auth defines no matchers, so they always failed. The operator table no longer lists it.
+- A condition that cannot be evaluated now fails closed: an approval policy applies its tier, an A2A deny policy denies, and an A2A allow policy grants nothing.
+
+### Changed
+
+- Requires theaios-core 0.1.1 or later.
+
 ## [0.1.2] - 2026-11-09
 
 ### Changed

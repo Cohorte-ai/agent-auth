@@ -8,6 +8,7 @@ from theaios.agent_auth.expressions import (
     compile_expression,
     evaluate as eval_expr,
 )
+from theaios.agent_auth.config import condition_errors
 from theaios.agent_auth.types import TIER_ORDER, ApprovalPolicyConfig
 
 
@@ -33,6 +34,11 @@ class ApprovalEvaluator:
                 raise ExpressionError(
                     f"Error in approval policy '{policy.name}': {e}",
                 ) from e
+            problems = condition_errors(policy.condition, self._variables)
+            if problems:
+                raise ExpressionError(
+                    f"Error in approval policy '{policy.name}': {'; '.join(problems)}"
+                )
             self._policies.append((policy, ast))
 
     def evaluate(
@@ -71,7 +77,9 @@ class ApprovalEvaluator:
                     variables=self._variables,
                 )
             except ExpressionError:
-                continue  # Skip policies with evaluation errors
+                # Fail closed: a policy that cannot be evaluated applies its tier. Skipping it
+                # would let an action that needs approval run autonomously.
+                result = True
 
             if not result:
                 continue

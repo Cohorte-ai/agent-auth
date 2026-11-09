@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import difflib
+from collections.abc import Iterable
 from pathlib import Path
 
 import yaml
+from theaios.core.expressions import ExpressionError, compile_expression, references
 from theaios.core.env import interpolate_env, interpolate_recursive
 
 from theaios.agent_auth.types import (
@@ -237,6 +240,31 @@ def _parse_config(raw: dict[str, object]) -> AuthConfig:
     )
 
 
+def _did_you_mean(name: str, known: Iterable[str]) -> str:
+    close = difflib.get_close_matches(name, list(known), n=1)
+    return f" (did you mean '{close[0]}'?)" if close else ""
+
+
+def condition_errors(condition: str, variables: Iterable[str]) -> list[str]:
+    """Problems in a policy condition: a syntax error, an undefined ``$variable``, or
+    ``matches`` (agent-auth has no matchers). Each would make the condition fail on every
+    evaluation."""
+    try:
+        refs = references(compile_expression(condition))
+    except ExpressionError as exc:
+        return [f"invalid condition: {exc}"]
+    known = set(variables)
+    errors = [
+        f"condition uses undefined variable '${name}'{_did_you_mean(name, known)}"
+        for name in sorted(refs.variables - known)
+    ]
+    errors += [
+        f"condition uses 'matches {name}', but agent-auth has no matchers"
+        for name in sorted(refs.matchers)
+    ]
+    return errors
+
+
 def validate_config(config: AuthConfig) -> list[str]:
     """Return list of validation errors (empty = valid)."""
     errors: list[str] = []
@@ -306,6 +334,10 @@ def validate_config(config: AuthConfig) -> list[str]:
                 f"expected one of {sorted(VALID_TIERS)}"
             )
 
+        errors.extend(
+            f"{prefix} ({ap.name}): {e}" for e in condition_errors(ap.condition, config.variables)
+        )
+
     # Delegation rules — unique names, valid duration bounds
     seen_dr: set[str] = set()
     for i, rule in enumerate(config.delegation.rules):
@@ -343,6 +375,11 @@ def validate_config(config: AuthConfig) -> list[str]:
             errors.append(f"{prefix}: duplicate A2A policy name '{policy.name}'")
         else:
             seen_a2a.add(policy.name)
+
+        errors.extend(
+            f"{prefix} ({policy.name}): {e}"
+            for e in condition_errors(policy.condition, config.variables)
+        )
 
         if policy.effect not in valid_effects:
             errors.append(
