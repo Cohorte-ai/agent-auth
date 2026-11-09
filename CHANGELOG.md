@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `approval_policy` on a decision named the first policy with the same tier, which could be one that did not match; it now names the policy that set the tier, and the reason names it too. When that policy's condition could not be evaluated, the reason says so.
+- `agent-auth check`, `inspect`, `sessions`, `delegations` and `audit` printed text in square brackets as terminal markup, so names and conditions could disappear; all text is now shown verbatim.
 - Unknown-key suggestions: `when:` suggests `condition`, guardrails-style `from:`/`to:` suggest `from_agent`/`to_agent`.
 - YAML syntax errors, a directory or a non-UTF-8 file passed as the config raise `ConfigError` with the file and line instead of a Python traceback.
 - README quick start: it now says to gate execution on `is_autonomous`. An action that needs approval is `allowed=True` with `requires_approval=True`; a copy of the old example would have run it without asking.

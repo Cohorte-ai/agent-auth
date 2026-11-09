@@ -165,3 +165,16 @@ def test_metadata_cannot_overwrite_the_resource(tmp_path: Path) -> None:
 def test_when_key_in_agent_auth_suggests_condition(tmp_path: Path) -> None:
     body = "approval_policies:\n  - name: d\n    when: 'action == \"delete\"'\n    tier: strong\n"
     assert "unknown key 'when' (did you mean 'condition'?)" in _errors(tmp_path, body)
+
+
+def test_cli_check_shows_brackets_verbatim(tmp_path: Path) -> None:
+    from click.testing import CliRunner
+
+    from theaios.agent_auth.cli import main
+
+    path = tmp_path / "a.yaml"
+    path.write_text(BASE + "audit:\n  enabled: false\n")
+    result = CliRunner().invoke(
+        main, ["-c", str(path), "check", "--agent", "[bot]", "--user", "u", "--action", "[act]"]
+    )
+    assert "'[act]'" in result.output and "'[bot]'" in result.output
