@@ -20,10 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - unknown keys everywhere: an A2A policy with guardrails-style `from:`/`to:` became a wildcard `allow` that overrode `default: deny`; `conditon:` made a policy match every action; `profils:` loaded zero profiles;
   - values of the wrong type: `condition: 42`, `enabled: "false"` in quotes, a string where a list or integer is expected.
 - `AuthEngine(...)` built from an `AuthConfig` in code now runs the same validation as `load_config` and raises `ConfigError`.
+- Request `metadata` could overwrite the fields an approval policy checks: `metadata={"resource": "/tmp"}` on a delete of `/ledger/main` made `resource == $protected` false, so the delete ran autonomously. The request's own fields (`agent`, `user`, `action`, `resource`, `scope`) now always win.
+- `metadata.key` in a condition, as shown in docs/expressions.md, never matched (metadata keys were only reachable at the top level), so `metadata.amount > $cap` never required approval. Both forms now work, in approval and A2A conditions.
+- `==`, `!=`, `in` and `not in` treat `"1001"` and `1001` as equal (theaios-core 0.1.1).
 - String values that spell numbers now compare as numbers in conditions (`"10000" > 5000`), and comparing a number with a non-number fails closed (theaios-core 0.1.1).
 
 ### Fixed
 
+- `approval_policy` on a decision named the first policy with the same tier, which could be one that did not match; it now names the policy that set the tier, and the reason names it too. When that policy's condition could not be evaluated, the reason says so.
+- Unknown-key suggestions: `when:` suggests `condition`, guardrails-style `from:`/`to:` suggest `from_agent`/`to_agent`.
 - YAML syntax errors, a directory or a non-UTF-8 file passed as the config raise `ConfigError` with the file and line instead of a Python traceback.
 - README quick start: it now says to gate execution on `is_autonomous`. An action that needs approval is `allowed=True` with `requires_approval=True`; a copy of the old example would have run it without asking.
 - The docs called theaios-guardrails "TrustGate"; they are different libraries.

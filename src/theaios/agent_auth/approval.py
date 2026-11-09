@@ -63,30 +63,42 @@ class ApprovalEvaluator:
         str
             The required approval tier ("autonomous", "soft", or "strong").
         """
-        # Build context with action
+        return self.explain(action, context, default_tier)[0]
+
+    def explain(
+        self,
+        action: str,
+        context: dict[str, object],
+        default_tier: str = "autonomous",
+    ) -> tuple[str, str, str | None]:
+        """Like :meth:`evaluate`, also returning the name of the policy that set the tier
+        (empty if the default applies) and, if that policy's condition could not be
+        evaluated, the error (the policy then applies: fail closed)."""
         eval_context: dict[str, object] = dict(context)
         eval_context["action"] = action
 
         most_restrictive = default_tier
+        deciding = ""
+        deciding_error: str | None = None
 
         for policy, ast in self._policies:
+            error: str | None = None
             try:
                 result = eval_expr(
                     ast,
                     context=eval_context,
                     variables=self._variables,
                 )
-            except ExpressionError:
+            except ExpressionError as exc:
                 # Fail closed: a policy that cannot be evaluated applies its tier. Skipping it
                 # would let an action that needs approval run autonomously.
-                result = True
+                result, error = True, str(exc)
 
             if not result:
                 continue
 
-            # Policy matched — check if this tier is more restrictive
-            policy_tier = policy.tier
-            if TIER_ORDER.get(policy_tier, 0) > TIER_ORDER.get(most_restrictive, 0):
-                most_restrictive = policy_tier
+            if TIER_ORDER.get(policy.tier, 0) > TIER_ORDER.get(most_restrictive, 0):
+                most_restrictive = policy.tier
+                deciding, deciding_error = policy.name, error
 
-        return most_restrictive
+        return most_restrictive, deciding, deciding_error

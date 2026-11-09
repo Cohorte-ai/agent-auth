@@ -110,3 +110,58 @@ def test_string_values_still_escalate_correctly(tmp_path: Path) -> None:
         AuthRequest(agent="finbot", user="u", action="delete", resource="/ledger/main")
     )
     assert decision.requires_approval and decision.tier == "strong" and not decision.is_autonomous
+
+
+# --- Re-verification findings ------------------------------------------------------------
+
+PAY = """
+variables:
+  cap: 5000
+approval_policies:
+  - name: never
+    condition: 'action == "nothing"'
+    tier: strong
+  - name: big-payments
+    condition: 'action == "pay" and metadata.amount > $cap'
+    tier: soft
+  - name: protect
+    condition: 'action == "delete" and resource == $protected'
+    tier: strong
+audit:
+  enabled: false
+"""
+
+
+def _engine(tmp_path: Path) -> AuthEngine:
+    path = tmp_path / "pay.yaml"
+    base = BASE.replace("[read, delete, send]", "[read, delete, send, pay]")
+    base = base.replace("  protected: /ledger/main\n", "  protected: /ledger/main\n  cap: 5000\n")
+    path.write_text(base + PAY.replace("variables:\n  cap: 5000\n", ""))
+    return AuthEngine(load_config(str(path)))
+
+
+def test_metadata_dot_key_conditions_apply(tmp_path: Path) -> None:
+    decision = _engine(tmp_path).authorize(
+        AuthRequest(agent="finbot", user="u", action="pay", metadata={"amount": 10000})
+    )
+    assert decision.requires_approval and decision.tier == "soft"
+    assert decision.approval_policy == "big-payments"
+
+
+def test_metadata_cannot_overwrite_the_resource(tmp_path: Path) -> None:
+    decision = _engine(tmp_path).authorize(
+        AuthRequest(
+            agent="finbot",
+            user="u",
+            action="delete",
+            resource="/ledger/main",
+            metadata={"resource": "/tmp/scratch"},
+        )
+    )
+    assert decision.tier == "strong"
+    assert decision.approval_policy == "protect"
+
+
+def test_when_key_in_agent_auth_suggests_condition(tmp_path: Path) -> None:
+    body = "approval_policies:\n  - name: d\n    when: 'action == \"delete\"'\n    tier: strong\n"
+    assert "unknown key 'when' (did you mean 'condition'?)" in _errors(tmp_path, body)

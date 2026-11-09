@@ -382,8 +382,23 @@ def _items(section: object) -> list[tuple[object, object]]:
     return list(section.items()) if isinstance(section, dict) else []
 
 
+# Keys from a neighbouring library or a common guess, mapped to the right key here. Checked
+# before fuzzy matching, which can suggest something harmful (`condition` -> `description`
+# would leave a rule with no condition, matching everything).
+_ALIASES = {
+    "when": "condition",
+    "if": "condition",
+    "from": "from_agent",
+    "to": "to_agent",
+    "source": "from_agent",
+    "target": "to_agent",
+}
+
+
 def _did_you_mean(name: str, known: Iterable[str]) -> str:
     options = list(known)
+    if _ALIASES.get(name) in options:
+        return f" (did you mean '{_ALIASES[name]}'?)"
     close = difflib.get_close_matches(name, options, n=1)
     if not close and name:  # `from` for `from_agent`
         close = [k for k in options if k.startswith(name + "_")][:1]
