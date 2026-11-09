@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import difflib
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import yaml
+from theaios.core.expressions import ExpressionError, compile_expression, references
 from theaios.core.env import interpolate_env, interpolate_recursive
 
 from theaios.agent_auth.types import (
@@ -48,11 +51,25 @@ def load_config(path: str = "agent_auth.yaml") -> AuthConfig:
     if not config_path.exists():
         raise FileNotFoundError(f"Auth config file not found: {path}")
 
-    with open(config_path) as f:
-        raw = yaml.safe_load(f)
+    if not config_path.is_file():
+        raise ConfigError([f"{path} is not a file"])
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        where = f"{path}:{mark.line + 1}" if mark is not None else path
+        problem = getattr(exc, "problem", None) or str(exc)
+        raise ConfigError([f"{where}: YAML syntax error: {problem}"]) from None
+    except UnicodeDecodeError:
+        raise ConfigError([f"{path} is not UTF-8 text"]) from None
 
     if not isinstance(raw, dict):
         raise ConfigError(["Auth config file must be a YAML mapping"])
+
+    errors = shape_errors(raw)
+    if errors:
+        raise ConfigError(errors)
 
     # Security: parse and validate YAML structure BEFORE interpolating env vars.
     # This ensures that malformed configs are rejected before any env var values
@@ -237,6 +254,179 @@ def _parse_config(raw: dict[str, object]) -> AuthConfig:
     )
 
 
+# Every key the parser reads, per place in the file. Anything else is a typo or a key from
+# another tool (guardrails' `from:`/`to:`), and used to be dropped without a word.
+_STR, _INT, _BOOL, _STRLIST = (
+    "a string",
+    "an integer",
+    "true or false (unquoted)",
+    "a list of strings",
+)
+_TOP_KEYS = {
+    "version",
+    "metadata",
+    "variables",
+    "roles",
+    "profiles",
+    "approval_policies",
+    "delegation",
+    "a2a",
+    "sessions",
+    "audit",
+}
+_MAPPINGS = ("metadata", "variables", "roles", "profiles", "delegation", "a2a", "sessions", "audit")
+_ROLE = {"actions": _STRLIST, "extends": _STR, "description": _STR}
+_PROFILE = {
+    "role": _STR,
+    "allow": _STRLIST,
+    "deny": _STRLIST,
+    "scopes": _STRLIST,
+    "max_session_duration": _INT,
+    "default_tier": _STR,
+    "description": _STR,
+}
+_APPROVAL = {"name": _STR, "condition": _STR, "tier": _STR, "description": _STR}
+_DELEGATION = {"enabled": _BOOL, "default_duration": _INT, "max_duration": _INT, "rules": None}
+_DELEGATION_RULE = {
+    "name": _STR,
+    "allowed_actions": _STRLIST,
+    "max_duration": _INT,
+    "require_reason": _BOOL,
+    "description": _STR,
+}
+_A2A = {"default": _STR, "policies": None}
+_A2A_POLICY = {
+    "name": _STR,
+    "from_agent": _STR,
+    "to_agent": _STR,
+    "action": _STR,
+    "effect": _STR,
+    "condition": _STR,
+    "description": _STR,
+}
+_SESSIONS = {"default_duration": _INT, "max_duration": _INT, "cleanup_interval": _INT}
+_AUDIT = {"enabled": _BOOL, "path": _STR, "retention_days": _INT}
+
+
+def _type_ok(value: object, kind: str) -> bool:
+    if kind == _STR:
+        return isinstance(value, str)
+    if kind == _INT:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if kind == _BOOL:
+        return isinstance(value, bool)
+    return isinstance(value, list) and all(isinstance(x, str) for x in value)
+
+
+def _check_mapping(where: str, raw: object, spec: Mapping[str, str | None]) -> list[str]:
+    if not isinstance(raw, dict):
+        return [f"{where}: must be a mapping, got {type(raw).__name__}"]
+    errors = []
+    for key, value in raw.items():
+        if key not in spec:
+            errors.append(f"{where}: unknown key '{key}'{_did_you_mean(str(key), spec)}")
+            continue
+        kind = spec[key]
+        if kind is not None and value is not None and not _type_ok(value, kind):
+            errors.append(f"{where}: '{key}' must be {kind}, got {type(value).__name__}")
+    return errors
+
+
+def _check_list(where: str, raw: object, spec: Mapping[str, str | None]) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return [f"{where}: must be a list (each entry starting with '-'), got {type(raw).__name__}"]
+    errors = []
+    for i, entry in enumerate(raw):
+        label = f"{where}[{i}]"
+        if isinstance(entry, dict) and "name" in entry:
+            label += f" ({entry['name']})"
+        errors += _check_mapping(label, entry, spec)
+    return errors
+
+
+def shape_errors(raw: dict[object, object]) -> list[str]:
+    """Structural problems that parsing would otherwise hide: unknown keys, sections of the
+    wrong type (``approval_policies`` written as a mapping loaded zero policies), values of the
+    wrong type (``condition: 42``). Each used to load silently and change what the config does."""
+    errors = [
+        f"config: unknown key '{key}'{_did_you_mean(str(key), _TOP_KEYS)}"
+        for key in raw
+        if key not in _TOP_KEYS
+    ]
+    for key in _MAPPINGS:
+        if raw.get(key) is not None and not isinstance(raw[key], dict):
+            errors.append(f"'{key}' must be a mapping, got {type(raw[key]).__name__}")
+    for name, role in _items(raw.get("roles")):
+        errors += _check_mapping(f"roles.{name}", role, _ROLE)
+    for name, profile in _items(raw.get("profiles")):
+        errors += _check_mapping(f"profiles.{name}", profile, _PROFILE)
+    errors += _check_list("approval_policies", raw.get("approval_policies"), _APPROVAL)
+    delegation = raw.get("delegation")
+    if isinstance(delegation, dict):
+        errors += _check_mapping("delegation", delegation, _DELEGATION)
+        errors += _check_list("delegation.rules", delegation.get("rules"), _DELEGATION_RULE)
+    a2a = raw.get("a2a")
+    if isinstance(a2a, dict):
+        errors += _check_mapping("a2a", a2a, _A2A)
+        errors += _check_list("a2a.policies", a2a.get("policies"), _A2A_POLICY)
+    if isinstance(raw.get("sessions"), dict):
+        errors += _check_mapping("sessions", raw["sessions"], _SESSIONS)
+    if isinstance(raw.get("audit"), dict):
+        errors += _check_mapping("audit", raw["audit"], _AUDIT)
+    return errors
+
+
+def _items(section: object) -> list[tuple[object, object]]:
+    return list(section.items()) if isinstance(section, dict) else []
+
+
+# Keys from a neighbouring library or a common guess, mapped to the right key here. Checked
+# before fuzzy matching, which can suggest something harmful (`condition` -> `description`
+# would leave a rule with no condition, matching everything).
+_ALIASES = {
+    "when": "condition",
+    "if": "condition",
+    "from": "from_agent",
+    "to": "to_agent",
+    "source": "from_agent",
+    "target": "to_agent",
+}
+
+
+def _did_you_mean(name: str, known: Iterable[str]) -> str:
+    options = list(known)
+    if _ALIASES.get(name) in options:
+        return f" (did you mean '{_ALIASES[name]}'?)"
+    close = difflib.get_close_matches(name, options, n=1)
+    if not close and name:  # `from` for `from_agent`
+        close = [k for k in options if k.startswith(name + "_")][:1]
+    return f" (did you mean '{close[0]}'?)" if close else ""
+
+
+def condition_errors(condition: str, variables: Iterable[str]) -> list[str]:
+    """Problems in a policy condition: a syntax error, an undefined ``$variable``, or
+    ``matches`` (agent-auth has no matchers). Each would make the condition fail on every
+    evaluation."""
+    if not isinstance(condition, str):
+        return [f"condition must be a string, got {type(condition).__name__}"]
+    try:
+        refs = references(compile_expression(condition))
+    except ExpressionError as exc:
+        return [f"invalid condition: {exc}"]
+    known = set(variables)
+    errors = [
+        f"condition uses undefined variable '${name}'{_did_you_mean(name, known)}"
+        for name in sorted(refs.variables - known)
+    ]
+    errors += [
+        f"condition uses 'matches {name}', but agent-auth has no matchers"
+        for name in sorted(refs.matchers)
+    ]
+    return errors
+
+
 def validate_config(config: AuthConfig) -> list[str]:
     """Return list of validation errors (empty = valid)."""
     errors: list[str] = []
@@ -306,6 +496,10 @@ def validate_config(config: AuthConfig) -> list[str]:
                 f"expected one of {sorted(VALID_TIERS)}"
             )
 
+        errors.extend(
+            f"{prefix} ({ap.name}): {e}" for e in condition_errors(ap.condition, config.variables)
+        )
+
     # Delegation rules — unique names, valid duration bounds
     seen_dr: set[str] = set()
     for i, rule in enumerate(config.delegation.rules):
@@ -343,6 +537,11 @@ def validate_config(config: AuthConfig) -> list[str]:
             errors.append(f"{prefix}: duplicate A2A policy name '{policy.name}'")
         else:
             seen_a2a.add(policy.name)
+
+        errors.extend(
+            f"{prefix} ({policy.name}): {e}"
+            for e in condition_errors(policy.condition, config.variables)
+        )
 
         if policy.effect not in valid_effects:
             errors.append(

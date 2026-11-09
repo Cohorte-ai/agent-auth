@@ -41,7 +41,7 @@ pip install theaios-agent-auth
 With optional extras:
 
 ```bash
-pip install "theaios-agent-auth[guardrails]"   # TrustGate adapter
+pip install "theaios-agent-auth[guardrails]"   # guardrails adapter
 pip install "theaios-agent-auth[middleware]"    # HTTP middleware
 pip install "theaios-agent-auth[all]"           # Everything
 ```
@@ -52,7 +52,7 @@ pip install "theaios-agent-auth[all]"           # Everything
 
 | Package | Purpose |
 |---|---|
-| `theaios-guardrails` | Input/output guardrails (TrustGate) |
+| `theaios-guardrails` | Policy guardrails for agent inputs, actions and outputs |
 | `theaios-context-router` | Intelligent context routing |
 | `theaios-agent-monitor` | Runtime observability |
 | **`theaios-agent-auth`** | **Identity and access management** |

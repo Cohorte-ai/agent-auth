@@ -14,6 +14,7 @@ from typing import Callable, Protocol
 from theaios.agent_auth.a2a import A2AEvaluator
 from theaios.agent_auth.approval import ApprovalEvaluator
 from theaios.agent_auth.audit import AuditLog
+from theaios.agent_auth.config import ConfigError, validate_config
 from theaios.agent_auth.delegation import DelegationManager
 from theaios.agent_auth.profiles import ResolvedProfile, check_action, check_scope, resolve_profile
 from theaios.agent_auth.roles import resolve_role
@@ -66,6 +67,10 @@ class AuthEngine:
         | Callable[[str], set[str]]
         | None = None,
     ) -> None:
+        # Same checks as load_config, so a config built in code cannot skip them.
+        errors = validate_config(config)
+        if errors:
+            raise ConfigError(errors)
         self._config = config
 
         # Wrap callable into protocol-compatible interface
@@ -214,7 +219,7 @@ class AuthEngine:
                 from_agent=request.agent,
                 to_agent=request.target_agent,
                 action=request.action,
-                context=dict(request.metadata),
+                context={**request.metadata, "metadata": dict(request.metadata)},
             )
             if not a2a_allowed:
                 decision = AuthDecision(
@@ -237,25 +242,28 @@ class AuthEngine:
 
         # Step 8: Evaluate approval policies
         default_tier = profile.default_tier if profile else "autonomous"
-        eval_context: dict[str, object] = {
-            "agent": request.agent,
-            "user": request.user,
-            "action": request.action,
-            "resource": request.resource,
-            "scope": request.scope,
-        }
-        eval_context.update(request.metadata)
+        # Metadata keys are reachable both as `metadata.key` (as documented) and, for
+        # compatibility, at the top level; the request's own fields always win, so metadata
+        # cannot overwrite the resource or user a policy checks.
+        eval_context: dict[str, object] = dict(request.metadata)
+        eval_context.update(
+            {
+                "agent": request.agent,
+                "user": request.user,
+                "action": request.action,
+                "resource": request.resource,
+                "scope": request.scope,
+                "metadata": dict(request.metadata),
+            }
+        )
 
-        tier = self._approval.evaluate(request.action, eval_context, default_tier)
+        tier, approval_policy, eval_error = self._approval.explain(
+            request.action, eval_context, default_tier
+        )
 
         requires_approval = tier in ("soft", "strong")
-        approval_policy = ""
-        if requires_approval:
-            # Find the matching policy name for reporting
-            for policy_cfg in self._config.approval_policies:
-                if policy_cfg.tier == tier:
-                    approval_policy = policy_cfg.name
-                    break
+        if not requires_approval:
+            approval_policy = ""
 
         reason = ""
         if delegation_grant is not None:
@@ -266,7 +274,12 @@ class AuthEngine:
             reason = "Allowed by user permissions"
 
         if requires_approval:
-            reason += f" (requires {tier} approval)"
+            reason += f" (requires {tier} approval"
+            if approval_policy:
+                reason += f": {approval_policy}"
+            if eval_error:
+                reason += f"; condition could not be evaluated ({eval_error}), treated as matched"
+            reason += ")"
 
         decision = AuthDecision(
             allowed=True,

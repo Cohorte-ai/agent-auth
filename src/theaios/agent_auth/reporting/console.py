@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from theaios.agent_auth.types import AuthConfig, AuthDecision, DelegationGrant, Session
@@ -13,12 +14,12 @@ console = Console()
 def print_config_summary(config: AuthConfig) -> None:
     """Print a formatted summary of an auth config."""
     if config.metadata.name:
-        console.print(f"\n[bold]{config.metadata.name}[/bold]")
+        console.print(f"\n[bold]{escape(config.metadata.name)}[/bold]")
     if config.metadata.description:
-        console.print(f"  {config.metadata.description}")
+        console.print(f"  {escape(config.metadata.description)}")
     console.print(f"  Version: {config.version}")
     if config.metadata.author:
-        console.print(f"  Author: {config.metadata.author}")
+        console.print(f"  Author: {escape(config.metadata.author)}")
 
     # Roles
     if config.roles:
@@ -30,10 +31,10 @@ def print_config_summary(config: AuthConfig) -> None:
         table.add_column("Description")
         for name, role in config.roles.items():
             table.add_row(
-                name,
-                role.extends or "-",
-                ", ".join(role.actions) or "-",
-                role.description or "-",
+                escape(name),
+                escape(role.extends) or "-",
+                escape(", ".join(role.actions)) or "-",
+                escape(role.description) or "-",
             )
         console.print(table)
 
@@ -54,12 +55,12 @@ def print_config_summary(config: AuthConfig) -> None:
                 "strong": "red",
             }.get(profile.default_tier, "white")
             table.add_row(
-                name,
-                profile.role or "-",
-                f"[{tier_color}]{profile.default_tier}[/{tier_color}]",
-                ", ".join(profile.allow) or "-",
-                ", ".join(profile.deny) or "-",
-                ", ".join(profile.scopes) or "*",
+                escape(name),
+                escape(profile.role) or "-",
+                f"[{tier_color}]{escape(profile.default_tier)}[/{tier_color}]",
+                escape(", ".join(profile.allow)) or "-",
+                escape(", ".join(profile.deny)) or "-",
+                escape(", ".join(profile.scopes)) or "*",
             )
         console.print(table)
 
@@ -74,17 +75,17 @@ def print_config_summary(config: AuthConfig) -> None:
         for policy in config.approval_policies:
             tier_color = {"soft": "yellow", "strong": "red"}.get(policy.tier, "white")
             table.add_row(
-                policy.name,
-                f"[{tier_color}]{policy.tier}[/{tier_color}]",
-                policy.condition or "(always)",
-                policy.description or "-",
+                escape(policy.name),
+                f"[{tier_color}]{escape(policy.tier)}[/{tier_color}]",
+                escape(policy.condition) or "(always)",
+                escape(policy.description) or "-",
             )
         console.print(table)
 
     # A2A Policies
     if config.a2a.policies:
         console.print(f"\n[bold]A2A Policies[/bold] ({len(config.a2a.policies)})")
-        console.print(f"  Default: {config.a2a.default}")
+        console.print(f"  Default: {escape(config.a2a.default)}")
         table = Table(show_header=True, header_style="bold")
         table.add_column("Name")
         table.add_column("From")
@@ -94,11 +95,11 @@ def print_config_summary(config: AuthConfig) -> None:
         for a2a_policy in config.a2a.policies:
             effect_color = "green" if a2a_policy.effect == "allow" else "red"
             table.add_row(
-                a2a_policy.name,
-                a2a_policy.from_agent,
-                a2a_policy.to_agent,
-                a2a_policy.action,
-                f"[{effect_color}]{a2a_policy.effect}[/{effect_color}]",
+                escape(a2a_policy.name),
+                escape(a2a_policy.from_agent),
+                escape(a2a_policy.to_agent),
+                escape(a2a_policy.action),
+                f"[{effect_color}]{escape(a2a_policy.effect)}[/{effect_color}]",
             )
         console.print(table)
 
@@ -114,8 +115,8 @@ def print_config_summary(config: AuthConfig) -> None:
         table.add_column("Require Reason")
         for rule in config.delegation.rules:
             table.add_row(
-                rule.name,
-                ", ".join(rule.allowed_actions) or "*",
+                escape(rule.name),
+                escape(", ".join(rule.allowed_actions)) or "*",
                 f"{rule.max_duration}s",
                 "[green]yes[/green]" if rule.require_reason else "[dim]no[/dim]",
             )
@@ -136,15 +137,15 @@ def print_auth_result(decision: AuthDecision) -> None:
     console.print(f"\n[bold {status_color}]{status_text}[/bold {status_color}]", end="")
 
     if decision.requires_approval:
-        console.print(f"  [yellow](requires {decision.tier} approval)[/yellow]", end="")
+        console.print(f"  [yellow](requires {escape(decision.tier)} approval)[/yellow]", end="")
     elif decision.tier != "autonomous":
-        console.print(f"  (tier: {decision.tier})", end="")
+        console.print(f"  (tier: {escape(decision.tier)})", end="")
     console.print()
 
     if decision.reason:
-        console.print(f"  Reason: {decision.reason}")
+        console.print(f"  Reason: {escape(decision.reason)}")
     if decision.approval_policy:
-        console.print(f"  Approval policy: {decision.approval_policy}")
+        console.print(f"  Approval policy: {escape(decision.approval_policy)}")
     if decision.evaluation_time_ms > 0:
         console.print(f"  Evaluated in: {decision.evaluation_time_ms:.2f}ms")
     console.print()
@@ -175,12 +176,12 @@ def print_sessions_list(sessions: list[Session]) -> None:
             expires = expires.split(".")[0]
 
         table.add_row(
-            session.session_id[:12] + "...",
-            session.agent,
-            session.user,
-            session.scope or "*",
-            created,
-            expires,
+            escape(session.session_id[:12] + "..."),
+            escape(session.agent),
+            escape(session.user),
+            escape(session.scope) or "*",
+            escape(created),
+            escape(expires),
         )
     console.print(table)
     console.print()
@@ -212,13 +213,13 @@ def print_delegations_list(delegations: list[DelegationGrant]) -> None:
             expires = expires.split(".")[0]
 
         table.add_row(
-            grant.delegation_id[:12] + "...",
-            grant.from_user,
-            grant.to_agent,
-            ", ".join(grant.actions),
-            granted,
-            expires,
-            grant.reason or "-",
+            escape(grant.delegation_id[:12] + "..."),
+            escape(grant.from_user),
+            escape(grant.to_agent),
+            escape(", ".join(grant.actions)),
+            escape(granted),
+            escape(expires),
+            escape(grant.reason) or "-",
         )
     console.print(table)
     console.print()
@@ -256,13 +257,13 @@ def print_audit_summary(entries: list[dict[str, object]]) -> None:
             reason = reason[:37] + "..."
 
         table.add_row(
-            ts,
-            str(entry.get("agent", "")),
-            str(entry.get("user", "")),
-            str(entry.get("action", "")),
+            escape(ts),
+            escape(str(entry.get("agent", ""))),
+            escape(str(entry.get("user", ""))),
+            escape(str(entry.get("action", ""))),
             f"[{allowed_color}]{allowed_text}[/{allowed_color}]",
-            str(entry.get("tier", "-")),
-            reason,
+            escape(str(entry.get("tier", "-"))),
+            escape(reason),
         )
     console.print(table)
     console.print()

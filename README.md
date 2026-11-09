@@ -95,6 +95,19 @@ print(decision.is_autonomous)  # True
 print(decision.is_denied)      # False
 ```
 
+Gate execution on `is_autonomous`, not on `allowed`. An action that needs approval is
+`allowed=True` with `requires_approval=True` and a `tier` of `soft` or `strong`: the agent may do
+it once a human approves, not before.
+
+```python
+if decision.is_autonomous:
+    run(action)
+elif decision.requires_approval:
+    ask_human(decision.tier, decision.reason)
+else:
+    refuse(decision.reason)
+```
+
 ### Use the CLI
 
 ```bash
@@ -144,7 +157,7 @@ Full documentation: [cohorte-ai.github.io/agent-auth](https://cohorte-ai.github.
 
 | Package | Purpose |
 |---|---|
-| [theaios-guardrails](https://github.com/Cohorte-ai/guardrails) | Input/output guardrails (TrustGate) |
+| [theaios-guardrails](https://github.com/Cohorte-ai/guardrails) | Policy guardrails for agent inputs, actions and outputs |
 | [theaios-context-router](https://github.com/Cohorte-ai/context-router) | Intelligent context routing |
 | [theaios-agent-monitor](https://github.com/Cohorte-ai/agent-monitor) | Runtime observability |
 | **theaios-agent-auth** | **Identity and access management** |

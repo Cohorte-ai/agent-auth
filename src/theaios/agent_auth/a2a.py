@@ -10,6 +10,7 @@ from theaios.agent_auth.expressions import (
     compile_expression,
     evaluate as eval_expr,
 )
+from theaios.agent_auth.config import condition_errors
 from theaios.agent_auth.types import A2AConfig, A2APolicyConfig
 
 
@@ -36,6 +37,9 @@ class A2AEvaluator:
                 raise ExpressionError(
                     f"Error in A2A policy '{policy.name}': {e}",
                 ) from e
+            problems = condition_errors(policy.condition, self._variables)
+            if problems:
+                raise ExpressionError(f"Error in A2A policy '{policy.name}': {'; '.join(problems)}")
             self._policies.append((policy, ast))
 
     def evaluate(
@@ -89,7 +93,9 @@ class A2AEvaluator:
                     variables=self._variables,
                 )
             except ExpressionError:
-                continue
+                # Fail closed: a deny policy that cannot be evaluated denies; an allow policy
+                # that cannot be evaluated grants nothing.
+                result = policy.effect == "deny"
 
             if not result:
                 continue

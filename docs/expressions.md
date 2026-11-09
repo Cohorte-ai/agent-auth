@@ -43,7 +43,6 @@ list        -> "[" (expression ("," expression)*)? "]"
 | `contains` | `resource contains "/sensitive/"` | Substring check |
 | `in` | `action in ["deploy", "delete"]` | Membership in list |
 | `not in` | `user not in ["bot", "system"]` | Non-membership |
-| `matches` | `input matches pii_detector` | Named matcher pattern |
 | `and` | `a == "x" and b == "y"` | Logical AND |
 | `or` | `a == "x" or b == "y"` | Logical OR |
 | `not` | `not action == "read"` | Logical NOT |
@@ -76,7 +75,12 @@ variables:
 condition: '$env == "production"'
 ```
 
-Undefined variables raise an `ExpressionError`.
+A condition that uses an undefined variable (usually a typo, such as `$protectd`) is rejected
+when the config loads, with a suggestion when a close name exists. So is `matches`: the grammar
+has it, but agent-auth defines no matchers.
+
+If a condition still cannot be evaluated at runtime, it fails closed: an approval policy applies
+its tier, an A2A deny policy denies, and an A2A allow policy grants nothing.
 
 ---
 
