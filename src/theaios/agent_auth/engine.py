@@ -14,6 +14,7 @@ from typing import Callable, Protocol
 from theaios.agent_auth.a2a import A2AEvaluator
 from theaios.agent_auth.approval import ApprovalEvaluator
 from theaios.agent_auth.audit import AuditLog
+from theaios.agent_auth.config import ConfigError, validate_config
 from theaios.agent_auth.delegation import DelegationManager
 from theaios.agent_auth.profiles import ResolvedProfile, check_action, check_scope, resolve_profile
 from theaios.agent_auth.roles import resolve_role
@@ -66,6 +67,10 @@ class AuthEngine:
         | Callable[[str], set[str]]
         | None = None,
     ) -> None:
+        # Same checks as load_config, so a config built in code cannot skip them.
+        errors = validate_config(config)
+        if errors:
+            raise ConfigError(errors)
         self._config = config
 
         # Wrap callable into protocol-compatible interface

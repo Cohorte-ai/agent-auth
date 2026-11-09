@@ -6,7 +6,7 @@ Using agent-auth with guardrails, HTTP middleware, and custom systems.
 
 ## Guardrails adapter
 
-The `GuardrailsAuthAdapter` integrates `agent-auth` with [theaios-guardrails](https://github.com/Cohorte-ai/guardrails) (TrustGate). It runs authorization **before** the guardrails evaluation, ensuring that only permitted agents can invoke guardrail-protected operations.
+The `GuardrailsAuthAdapter` integrates `agent-auth` with [theaios-guardrails](https://github.com/Cohorte-ai/guardrails). It runs authorization **before** the guardrails evaluation, ensuring that only permitted agents can invoke guardrail-protected operations.
 
 ### Installation
 

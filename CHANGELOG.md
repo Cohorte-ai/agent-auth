@@ -15,6 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Conditions using `matches` are rejected too: agent-auth defines no matchers, so they always failed. The operator table no longer lists it.
 - A condition that cannot be evaluated now fails closed: an approval policy applies its tier, an A2A deny policy denies, and an A2A allow policy grants nothing.
 
+- Mistakes in a config's structure no longer load silently. Each of these used to be accepted and change what the config does. They are now rejected, by name and with a suggestion where one exists:
+  - `approval_policies` written as a mapping loaded zero policies, so deletes that needed strong approval ran autonomously; any list section in the wrong shape is now an error;
+  - unknown keys everywhere: an A2A policy with guardrails-style `from:`/`to:` became a wildcard `allow` that overrode `default: deny`; `conditon:` made a policy match every action; `profils:` loaded zero profiles;
+  - values of the wrong type: `condition: 42`, `enabled: "false"` in quotes, a string where a list or integer is expected.
+- `AuthEngine(...)` built from an `AuthConfig` in code now runs the same validation as `load_config` and raises `ConfigError`.
+- String values that spell numbers now compare as numbers in conditions (`"10000" > 5000`), and comparing a number with a non-number fails closed (theaios-core 0.1.1).
+
+### Fixed
+
+- YAML syntax errors, a directory or a non-UTF-8 file passed as the config raise `ConfigError` with the file and line instead of a Python traceback.
+- README quick start: it now says to gate execution on `is_autonomous`. An action that needs approval is `allowed=True` with `requires_approval=True`; a copy of the old example would have run it without asking.
+- The docs called theaios-guardrails "TrustGate"; they are different libraries.
+
 ### Changed
 
 - Requires theaios-core 0.1.1 or later.
