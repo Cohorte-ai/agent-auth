@@ -203,7 +203,9 @@ class AuthEngine:
         # Step 5: Check delegations
         delegation_grant: DelegationGrant | None = None
         if not action_allowed:
-            delegation_grant = self._delegations.check(request.agent, request.action)
+            delegation_grant = self._delegations.check(
+                request.agent, request.action, user=request.user
+            )
             if delegation_grant is not None:
                 action_allowed = True
 

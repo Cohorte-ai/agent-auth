@@ -1,6 +1,6 @@
 """theaios-agent-auth — Agent-specific IAM for AI systems."""
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 from theaios.agent_auth.config import ConfigError, load_config
 from theaios.agent_auth.engine import AuthEngine

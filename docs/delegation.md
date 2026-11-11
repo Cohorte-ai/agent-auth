@@ -6,7 +6,7 @@ Temporary permission grants from users to agents.
 
 ## What is delegation?
 
-Delegation allows a user to temporarily grant an agent permissions it would not otherwise have. This is useful for:
+Delegation allows a user to temporarily grant an agent permissions it would not otherwise have, **when the agent acts for that user**. Alice's delegation to `assistant` applies to requests where `user="alice"`; it never lets the assistant do the same for Bob. This is useful for:
 
 - One-off tasks that exceed the agent's normal permissions
 - Time-bounded access for maintenance or cleanup operations

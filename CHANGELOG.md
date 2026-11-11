@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.4] - 2026-11-11
+
+### Security
+
+- A delegation applied to every request of the agent, whoever it acted for: after Bob delegated `send_report` to `assistant`, the assistant could `send_report` on behalf of Alice too. A delegation now applies only to requests from the user who granted it. `DelegationManager.check` takes an optional `user` (the engine always passes it).
+
 ## [0.1.3] - 2026-11-09
 
 ### Security
