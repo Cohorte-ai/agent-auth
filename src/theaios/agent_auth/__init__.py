@@ -3,7 +3,9 @@
 __version__ = "0.1.4"
 
 from theaios.agent_auth.config import ConfigError, load_config
-from theaios.agent_auth.engine import AuthEngine
+from theaios.agent_auth.engine import AuthEngine, VerifiedToken
+from theaios.agent_auth.resolution import Principal, ResolvedAgent
+from theaios.agent_auth.tokens import TokenClaims, TokenError
 from theaios.agent_auth.types import (
     A2AConfig,
     A2ADefault,
@@ -20,7 +22,9 @@ from theaios.agent_auth.types import (
     DelegationGrant,
     DelegationRuleConfig,
     DelegationStatus,
+    ResolutionConfig,
     RoleConfig,
+    SeparationOfDutiesConfig,
     Session,
     SessionConfig,
     SessionStatus,
@@ -64,4 +68,12 @@ __all__ = [
     "A2ADefault",
     "SessionStatus",
     "DelegationStatus",
+    # Resolution (0.2)
+    "Principal",
+    "ResolvedAgent",
+    "VerifiedToken",
+    "TokenClaims",
+    "TokenError",
+    "ResolutionConfig",
+    "SeparationOfDutiesConfig",
 ]

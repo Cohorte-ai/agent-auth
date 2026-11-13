@@ -70,6 +70,9 @@ class AuthRequest:
     scope: str = ""
     target_agent: str | None = None
     metadata: dict[str, object] = field(default_factory=dict)
+    # "on_behalf_of": the agent acts for ``user``. "service": the agent acts as itself, for
+    # no one (``user`` must be empty); only its own baseline applies.
+    identity: str = "on_behalf_of"
 
 
 @dataclass
@@ -82,6 +85,9 @@ class AuthDecision:
     requires_approval: bool = False
     approval_policy: str = ""
     evaluation_time_ms: float = 0.0
+    # What decided it: e.g. ["baseline:read:*"], ["grant:finance:approve_invoice"],
+    # ["delegation:<id>"], ["limit:payments:*"], ["deny:delete_*"], ["access"].
+    provenance: list[str] = field(default_factory=list)
 
     @property
     def is_denied(self) -> bool:
@@ -153,6 +159,11 @@ class AgentProfileConfig:
     max_session_duration: int = 3600
     default_tier: str = "autonomous"
     description: str = ""
+    # Who may use this agent: principal roles or user names. Empty: everyone (0.1 behaviour).
+    # "service" admits service requests (no user).
+    access: list[str] = field(default_factory=list)
+    # What this agent may additionally do for a principal holding a role: {role: [actions]}.
+    grants: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -235,6 +246,24 @@ class AuthMetadata:
 
 
 @dataclass
+class SeparationOfDutiesConfig:
+    """The same principal may not perform two of ``actions`` on the same resource."""
+
+    name: str
+    actions: list[str] = field(default_factory=list)
+    description: str = ""
+
+
+@dataclass
+class ResolutionConfig:
+    """How permissions are resolved. ``user_permissions``: "union" (0.1 behaviour: an agent
+    may also do anything the user-permissions provider grants the user; deprecated) or
+    "ignore" (only the agent's own resolution counts)."""
+
+    user_permissions: str = "union"
+
+
+@dataclass
 class AuthConfig:
     """Top-level auth configuration — maps 1:1 to agent_auth.yaml."""
 
@@ -248,3 +277,5 @@ class AuthConfig:
     a2a: A2AConfig = field(default_factory=A2AConfig)
     sessions: SessionConfig = field(default_factory=SessionConfig)
     audit: AuditConfig = field(default_factory=AuditConfig)
+    separation_of_duties: list[SeparationOfDutiesConfig] = field(default_factory=list)
+    resolution: ResolutionConfig = field(default_factory=ResolutionConfig)
