@@ -225,6 +225,7 @@ def test_guardrails_adapter_checks_the_tool_of_a_tool_call(tmp_path: Path) -> No
     assert outcome({"tool_name": "payments:transfer", "arguments": {}}) == "deny"
     assert outcome({"tool_name": "read:docs", "arguments": {}}) == "allow"
     assert outcome({"tool_name": "payments:transfer", "action": "read:docs"}) == "deny"
+    assert outcome({"tool_name": "read:docs", "action": "read:docs"}) == "allow"
     assert outcome({"arguments": {}}) == "deny"  # a tool call must name its tool
     assert outcome({"action": ["payments:transfer"]}, scope="action") == "deny"  # not str()
     assert outcome({"action": "read:x", "resource": ["inv-1"]}, scope="action") == "deny"

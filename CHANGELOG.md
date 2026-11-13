@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- The guardrails adapter checked a `tool_call` event as the action `tool_call`, never the tool: a profile's `deny` (and approval policies) on tool names did not apply to tool calls from guardrails' LangChain and OpenAI Agents adapters. It now checks `data["tool_name"]`, and `data["action"]` when present (both when both are). A `tool_call` without a tool name, and a non-string `tool_name`, `action` or `resource`, are denied (they were converted with `str()`). An agent allowed `tool_call` now needs the tools themselves in its profile.
+- The guardrails adapter checked a `tool_call` event as the action `tool_call`, never the tool: a profile's `deny` (and approval policies) on tool names did not apply to tool calls from guardrails' LangChain and OpenAI Agents adapters. It now checks `data["tool_name"]`, or `data["action"]` (an event whose two differ is denied). A `tool_call` without a tool name, and a non-string `tool_name`, `action` or `resource`, are denied (they were converted with `str()`). An agent allowed `tool_call` now needs the tools themselves in its profile.
 - The FastAPI middleware decides `HEAD` as `get` (HEAD runs the GET handler, so a denial on `get:/admin*` did not cover it).
 
 ## [0.1.4] - 2026-11-11
