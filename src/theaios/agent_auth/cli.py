@@ -132,6 +132,9 @@ def check(
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
+    if service and user:
+        click.echo("Error: --service acts for no one: do not pass --user with it", err=True)
+        sys.exit(2)
     if not service and not user:
         click.echo("Error: give --user, or --service for a request that acts for no one", err=True)
         sys.exit(2)
@@ -160,6 +163,7 @@ def check(
         click.echo(json.dumps(result, indent=2))
     else:
         print_auth_result(decision)
+        click.echo(_LIMITS_NOTE, err=True)
 
     if decision.is_denied:
         sys.exit(1)
@@ -357,6 +361,12 @@ def audit(
         print_audit_summary(entries)
 
 
+_LIMITS_NOTE = (
+    "Note: limits set in code (AuthEngine(limits=...)) are not applied here; your application "
+    "may deny more."
+)
+
+
 def _roles_option(roles: str) -> Callable[[str], list[str]]:
     listed = [r.strip() for r in roles.split(",") if r.strip()]
     return lambda _user: listed
@@ -384,6 +394,9 @@ def preview(
     except (FileNotFoundError, ConfigError) as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+    if service and user:
+        click.echo("Error: --service acts for no one: do not pass --user with it", err=True)
+        sys.exit(2)
     if not service and not user:
         click.echo("Error: give --user, or --service", err=True)
         sys.exit(2)
@@ -410,3 +423,4 @@ def preview(
         )
         return
     print_preview(resolved)
+    click.echo(_LIMITS_NOTE, err=True)

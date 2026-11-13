@@ -238,7 +238,7 @@ def test_token_refusals(tmp_path: Path) -> None:
     with pytest.raises(TokenError, match="not 'mcp://crm'"):
         e.verify_token(token, audience="mcp://crm")
     body, sig = token.split(".")
-    with pytest.raises(TokenError, match="bad signature"):
+    with pytest.raises(TokenError, match="malformed token|bad signature"):
         e.verify_token(body + "x." + sig, audience="mcp://ledger")
     other = _engine(tmp_path, token_key=b"z" * 32)
     with pytest.raises(TokenError, match="bad signature"):
@@ -248,7 +248,7 @@ def test_token_refusals(tmp_path: Path) -> None:
     with pytest.raises(TokenError, match="expired"):
         e.verify_token(short, audience="mcp://ledger")
     with pytest.raises(TokenError, match="at least 32 bytes"):
-        _engine(tmp_path, token_key=b"short").issue_token(r, "mcp://ledger")
+        _engine(tmp_path, token_key=b"short")  # refused at construction
     with pytest.raises(TokenError, match="without access"):
         e.issue_token(e.resolve("assistant", e.principal("carol")), "mcp://ledger")
 
@@ -258,11 +258,11 @@ def test_a_token_dies_when_permissions_change(tmp_path: Path) -> None:
     e = _engine(tmp_path, user_roles=lambda u: roles.get(u, []))
     token = e.issue_token(e.resolve("assistant", e.principal("alice")), "mcp://ledger")
     roles["alice"] = []  # alice leaves finance
-    with pytest.raises(TokenError, match="changed since the token was issued"):
+    with pytest.raises(TokenError, match="differ from when the token was issued"):
         e.verify_token(token, "mcp://ledger")
     roles["alice"] = ["finance"]
     edited = _engine(tmp_path, limits={"*": ["approve_*"]})  # the policy changed
-    with pytest.raises(TokenError, match="changed"):
+    with pytest.raises(TokenError, match="differ"):
         edited.verify_token(token, "mcp://ledger")
 
 
@@ -280,7 +280,7 @@ def test_a_delegated_token_carries_and_rechecks_the_chain(tmp_path: Path) -> Non
     ("extra", "message"),
     [
         ("resolution:\n  user_permissions: maybe\n", "expected 'union' or 'ignore'"),
-        ("separation_of_duties:\n  - {name: x, actions: [a]}\n", "at least two actions"),
+        ("separation_of_duties:\n  - {name: x, actions: [a]}\n", "at least two different actions"),
         ("resolution:\n  user_permision: ignore\n", "unknown key 'user_permision'"),
     ],
 )

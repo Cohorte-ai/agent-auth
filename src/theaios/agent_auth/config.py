@@ -48,6 +48,33 @@ def _interpolate_recursive(obj: object) -> object:
     return interpolate_recursive(obj)
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that refuses duplicate keys: YAML keeps the last one silently, so a merge
+    conflict could drop a profile's deny list or empty separation_of_duties."""
+
+
+def _construct_unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    seen: dict[Any, int] = {}
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=True)  # type: ignore[no-untyped-call, unused-ignore]
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                None,
+                None,
+                f"duplicate key '{key}' (first at line {seen[key] + 1}); YAML would keep only "
+                "the last one",
+                key_node.start_mark,
+            )
+        seen[key] = key_node.start_mark.line
+    return dict(loader.construct_pairs(node, deep=True))  # type: ignore[no-untyped-call, unused-ignore]
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
 def load_config(path: str = "agent_auth.yaml") -> AuthConfig:
     """Load a YAML auth config file, validate, and return typed config."""
     config_path = Path(path)
@@ -58,7 +85,7 @@ def load_config(path: str = "agent_auth.yaml") -> AuthConfig:
         raise ConfigError([f"{path} is not a file"])
     try:
         with open(config_path, encoding="utf-8") as f:
-            raw = yaml.safe_load(f)
+            raw = yaml.load(f, Loader=_UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
     except yaml.YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
         where = f"{path}:{mark.line + 1}" if mark is not None else path
@@ -385,7 +412,14 @@ def _check_mapping(where: str, raw: object, spec: Mapping[str, str | None]) -> l
             continue
         kind = spec[key]
         if kind is not None and value is not None and not _type_ok(value, kind):
-            errors.append(f"{where}: '{key}' must be {kind}, got {type(value).__name__}")
+            if kind == _GRANTS and isinstance(value, dict):
+                bad = [str(k) for k, v in value.items() if not isinstance(v, list)]
+                errors.append(
+                    f"{where}: grants for {', '.join(repr(b) for b in bad) or 'a role'} must be "
+                    "a list of actions (e.g. finance: [approve_invoice])"
+                )
+            else:
+                errors.append(f"{where}: '{key}' must be {kind}, got {type(value).__name__}")
     return errors
 
 
@@ -595,8 +629,8 @@ def validate_config(config: AuthConfig) -> list[str]:
             errors.append(f"{prefix}: duplicate name '{sod.name}'")
         else:
             seen_sod.add(sod.name)
-        if len(sod.actions) < 2:
-            errors.append(f"{prefix} ({sod.name}): 'actions' needs at least two actions")
+        if len({a.casefold() for a in sod.actions}) < 2:
+            errors.append(f"{prefix} ({sod.name}): 'actions' needs at least two different actions")
     for name, profile in config.profiles.items():
         for grant_role, actions in profile.grants.items():
             if not grant_role.strip():

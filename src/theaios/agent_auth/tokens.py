@@ -18,12 +18,14 @@ import hashlib
 import hmac
 import json
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from theaios.agent_auth.resolution import ResolvedAgent
 
 TOKEN_VERSION = 1
 MAX_TTL = 3600
+MAX_LEEWAY = 300
 MIN_KEY_BYTES = 32
 
 
@@ -49,16 +51,42 @@ def _b64(data: bytes) -> str:
 
 
 def _unb64(text: str) -> bytes:
-    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    """Strict: only the exact unpadded url-safe spelling decodes, so a token has one form."""
+    if not text or any(c not in _B64 for c in text):
+        raise ValueError("not url-safe base64")
+    data = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    if _b64(data) != text:
+        raise ValueError("non-canonical base64")
+    return data
 
 
-def check_key(key: bytes | None) -> bytes:
-    if not isinstance(key, bytes) or len(key) < MIN_KEY_BYTES:
+_B64 = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+
+
+def check_keys(key: bytes | Sequence[bytes] | None) -> list[bytes]:
+    """One key, or several for rotation: the first signs, every one verifies."""
+    if key is None:
         raise TokenError(
-            f"tokens need a secret key of at least {MIN_KEY_BYTES} bytes "
-            "(AuthEngine(..., token_key=...)); generate one with secrets.token_bytes(32)"
+            "tokens need a secret key (AuthEngine(..., token_key=...)); generate one with "
+            "secrets.token_bytes(32)"
         )
-    return key
+    keys = [key] if isinstance(key, (bytes, str)) else list(key)
+    if not keys:
+        raise TokenError("token_key is an empty list")
+    for k in keys:
+        if not isinstance(k, bytes):
+            raise TokenError(
+                f"token keys must be bytes, not {type(k).__name__} (use key.encode() or "
+                "secrets.token_bytes(32))"
+            )
+        if len(k) < MIN_KEY_BYTES:
+            raise TokenError(f"a token key must be at least {MIN_KEY_BYTES} bytes, got {len(k)}")
+    return keys
+
+
+def check_key(key: bytes | Sequence[bytes] | None) -> bytes:
+    """The signing key (the first one)."""
+    return check_keys(key)[0]
 
 
 def issue(resolved: ResolvedAgent, audience: str, ttl: int, key: bytes) -> str:
@@ -86,16 +114,22 @@ def issue(resolved: ResolvedAgent, audience: str, ttl: int, key: bytes) -> str:
     return f"{_b64(body)}.{_b64(sig)}"
 
 
-def decode(token: str, audience: str, key: bytes, *, leeway: int = 0) -> TokenClaims:
-    """Check signature, audience and expiry; return the claims (the fingerprint is checked
-    by the engine against a fresh resolution)."""
+def decode(
+    token: str, audience: str, key: bytes | Sequence[bytes], *, leeway: int = 0
+) -> TokenClaims:
+    """Check signature, audience, issue time and expiry; return the claims (the fingerprint
+    is checked by the engine against a fresh resolution)."""
+    if not 0 <= leeway <= MAX_LEEWAY:
+        raise TokenError(f"leeway must be between 0 and {MAX_LEEWAY} seconds")
     try:
         body_b64, sig_b64 = token.split(".")
         body, sig = _unb64(body_b64), _unb64(sig_b64)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, AttributeError):
         raise TokenError("malformed token") from None
-    expected = hmac.new(check_key(key), body, hashlib.sha256).digest()
-    if not hmac.compare_digest(sig, expected):
+    if not any(
+        hmac.compare_digest(sig, hmac.new(k, body, hashlib.sha256).digest())
+        for k in check_keys(key)
+    ):
         raise TokenError("bad signature: the token was altered or signed with another key")
     try:
         c = json.loads(body)
@@ -117,6 +151,11 @@ def decode(token: str, audience: str, key: bytes, *, leeway: int = 0) -> TokenCl
         raise TokenError(f"unsupported token version {version}")
     if claims.audience != audience:
         raise TokenError(f"token is for '{claims.audience}', not '{audience}'")
-    if time.time() > claims.expires_at + leeway:
+    now = time.time()
+    if claims.issued_at > now + leeway:
+        raise TokenError("token issued in the future: the issuer's clock is ahead")
+    if not 0 < claims.expires_at - claims.issued_at <= MAX_TTL:
+        raise TokenError(f"token lifetime is not between 1 and {MAX_TTL} seconds")
+    if now > claims.expires_at + leeway:
         raise TokenError("token expired")
     return claims

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +22,11 @@ class AuditLog:
 
     def __init__(self, path: str = ".agent_auth/audit.jsonl") -> None:
         self._path = Path(path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Private: entries name users, resources and decisions.
+        fd = os.open(self._path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        os.close(fd)
+        os.chmod(self._path, 0o600)
         self._log = JsonlLog(self._path)
 
     @property
@@ -49,6 +56,8 @@ class AuditLog:
             "scope": request.scope,
             "target_agent": request.target_agent,
             "evaluation_time_ms": round(decision.evaluation_time_ms, 3),
+            "identity": request.identity,
+            "provenance": list(decision.provenance),
         }
 
         if config:

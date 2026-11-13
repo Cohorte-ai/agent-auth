@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import fnmatch
 import time
 import warnings
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Callable, Protocol
 
 from theaios.agent_auth.a2a import A2AEvaluator
@@ -84,7 +84,7 @@ class AuthEngine:
         *,
         user_roles: Callable[[str], Iterable[str]] | None = None,
         limits: Mapping[str, Iterable[str]] | None = None,
-        token_key: bytes | None = None,
+        token_key: bytes | Sequence[bytes] | None = None,
     ) -> None:
         # Same checks as load_config, so a config built in code cannot skip them.
         errors = validate_config(config)
@@ -139,7 +139,7 @@ class AuthEngine:
         self._user_roles = user_roles
         self._limits = _check_limits(limits, config)
         if token_key is not None:
-            tokens.check_key(token_key)
+            tokens.check_keys(token_key)
         self._token_key = token_key
         self._sod_done: dict[tuple[str, str, str], set[str]] = {}
         self._warned_union: set[tuple[str, str]] = set()
@@ -603,7 +603,7 @@ class AuthEngine:
         """Check a token and return its claims with the agent's *current* resolution. Refuses
         a token whose resolution changed since it was issued (policy edit, roles, revoked
         delegation)."""
-        claims = tokens.decode(token, audience, tokens.check_key(self._token_key), leeway=leeway)
+        claims = tokens.decode(token, audience, tokens.check_keys(self._token_key), leeway=leeway)
         if claims.identity == SERVICE:
             principal = Principal.service()
         else:
@@ -616,7 +616,9 @@ class AuthEngine:
             current = current.attenuate(self.resolve(agent, principal))
         if current.fingerprint != claims.fingerprint:
             raise tokens.TokenError(
-                "the agent's permissions changed since the token was issued; issue a new one"
+                "the agent's permissions differ from when the token was issued: they changed "
+                "(policy, roles, delegations), or this verifier's config, limits or user_roles "
+                "differ from the issuer's; issue a new one"
             )
         return VerifiedToken(claims, current)
 
