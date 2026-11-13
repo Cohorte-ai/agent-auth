@@ -91,7 +91,9 @@ async def fastapi_auth_middleware(
             content={"error": "X-Agent-Name and X-User-Name headers are required"},
         )
 
-    action = f"{request.method.lower()}:{request.url.path}"
+    # HEAD runs the GET handler: decide it as GET, so a rule on get:<path> covers it.
+    method = "get" if request.method.upper() == "HEAD" else request.method.lower()
+    action = f"{method}:{request.url.path}"
 
     auth_request = AuthRequest(
         agent=agent,
