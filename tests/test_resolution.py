@@ -40,6 +40,10 @@ profiles:
 separation_of_duties:
   - name: payments
     actions: [create_payment, approve_payment]
+a2a:
+  default: deny
+  policies:
+    - {name: assistant-to-researcher, from_agent: assistant, to_agent: researcher, effect: allow}
 audit:
   enabled: false
 """

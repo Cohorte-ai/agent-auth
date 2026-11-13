@@ -185,6 +185,8 @@ class DelegationRuleConfig:
     max_duration: int = 86400
     require_reason: bool = False
     description: str = ""
+    # Who may delegate under this rule: the delegating user's roles (0.2). Empty: everyone.
+    roles: list[str] = field(default_factory=list)
 
 
 @dataclass

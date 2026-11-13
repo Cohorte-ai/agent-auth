@@ -8,6 +8,7 @@ Returns an AuthDecision for every request.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from datetime import datetime
 from dataclasses import dataclass
 import fnmatch
@@ -212,6 +213,23 @@ class AuthEngine:
                     evaluation_time_ms=(time.perf_counter() - start) * 1000,
                 )
                 return self._done(request, decision, record)
+            # A session bound to a scope binds its requests: a request without a scope takes
+            # the session's; a request for another scope is refused.
+            if session.scope:
+                if not request.scope:
+                    request = dataclasses.replace(request, scope=session.scope)
+                elif not fnmatch.fnmatchcase(request.scope, session.scope):
+                    return self._done(
+                        request,
+                        AuthDecision(
+                            allowed=False,
+                            reason=f"Scope '{request.scope}' is outside the session's scope "
+                            f"'{session.scope}'",
+                            evaluation_time_ms=(time.perf_counter() - start) * 1000,
+                            provenance=["scope"],
+                        ),
+                        record,
+                    )
 
         # Step 2: Who is the agent acting for? One identity, never mixed.
         if request.identity not in IDENTITIES:
@@ -236,7 +254,20 @@ class AuthEngine:
                 record,
             )
         profile = self._profiles.get(request.agent)
-        principal = self._principal(request)
+        try:
+            principal = self._principal(request)
+        except Exception as exc:  # noqa: BLE001 - the identity provider failed: fail closed
+            return self._done(
+                request,
+                AuthDecision(
+                    allowed=False,
+                    reason=f"Could not get the roles of '{request.user}' (user_roles failed: "
+                    f"{type(exc).__name__}: {exc})",
+                    evaluation_time_ms=(time.perf_counter() - start) * 1000,
+                    provenance=["access"],
+                ),
+                record,
+            )
         if given is not None and (
             given.agent != request.agent
             or given.principal.identity != principal.identity
@@ -319,7 +350,7 @@ class AuthEngine:
 
         # Separation of duties: the same principal may not do two conflicting actions on the
         # same resource.
-        if action_allowed and request.resource:
+        if action_allowed:
             conflict = self._sod_conflict(request)
             if conflict is not None:
                 return self._done(
@@ -333,13 +364,32 @@ class AuthEngine:
                     record,
                 )
 
-        # Step 7: Check A2A policies
+        # Step 7: Check A2A policies. A sub-agent's resolution (``delegate``) carries the agent
+        # that handed it the work: that hand-off must be allowed too, for this action.
+        if given is not None and given.chain:
+            ok, why = self._a2a.evaluate(
+                from_agent=given.chain[-1],
+                to_agent=request.agent,
+                action=request.action,
+                context=self._condition_context(request),
+            )
+            if not ok:
+                return self._done(
+                    request,
+                    AuthDecision(
+                        allowed=False,
+                        reason=f"{why} ('{given.chain[-1]}' delegated to '{request.agent}')",
+                        evaluation_time_ms=(time.perf_counter() - start) * 1000,
+                        provenance=["a2a"],
+                    ),
+                    record,
+                )
         if request.target_agent:
             a2a_allowed, a2a_reason = self._a2a.evaluate(
                 from_agent=request.agent,
                 to_agent=request.target_agent,
                 action=request.action,
-                context={**request.metadata, "metadata": dict(request.metadata)},
+                context=self._condition_context(request),
             )
             if not a2a_allowed:
                 decision = AuthDecision(
@@ -415,7 +465,7 @@ class AuthEngine:
             evaluation_time_ms=(time.perf_counter() - start) * 1000,
             provenance=provenance,
         )
-        if record and request.resource:
+        if record:
             self._sod_record(request)
         return self._done(request, decision, record)
 
@@ -424,12 +474,19 @@ class AuthEngine:
     def _principal(self, request: AuthRequest) -> Principal:
         if request.identity == SERVICE:
             return Principal.service()
-        roles = list(self._user_roles(request.user)) if self._user_roles and request.user else []
-        return Principal(ON_BEHALF_OF, request.user, frozenset(str(r) for r in roles))
+        roles: list[str] = []
+        if self._user_roles and request.user:
+            got = self._user_roles(request.user)
+            if got is None or isinstance(got, (str, bytes)):
+                raise TypeError(f"user_roles must return a collection of role names, got {got!r}")
+            roles = [str(r) for r in got]
+        return Principal(ON_BEHALF_OF, request.user, frozenset(roles))
 
     def principal(self, user: str = "", *, service: bool = False) -> Principal:
         """The principal for a user (roles from ``user_roles``) or for service requests."""
         if service:
+            if user:
+                raise ValueError("a service principal acts for no one: do not pass a user")
             return Principal.service()
         return self._principal(AuthRequest(agent="", user=user, action=""))
 
@@ -474,7 +531,15 @@ class AuthEngine:
             duration = int((expires - granted).total_seconds())
         except (TypeError, ValueError):
             return False
-        return not self._delegations.validate_rule(list(grant.actions), duration, grant.reason)
+        try:
+            roles = self._principal(
+                AuthRequest(agent=grant.to_agent, user=grant.from_user, action="")
+            ).roles
+        except Exception:  # noqa: BLE001 - unknown roles: rules that need roles cannot pass
+            roles = frozenset()
+        return not self._delegations.validate_rule(
+            list(grant.actions), duration, grant.reason, sorted(roles)
+        )
 
     def _warn_union(self, request: AuthRequest) -> None:
         key = (request.agent, request.action)
@@ -521,7 +586,14 @@ class AuthEngine:
     def delegate(self, parent: ResolvedAgent, child_agent: str) -> ResolvedAgent:
         """What ``child_agent`` may do when ``parent`` hands it work: the intersection of the
         child's own resolution and the parent's, for the same principal."""
-        return parent.attenuate(self.resolve(child_agent, parent.principal))
+        child = parent.attenuate(self.resolve(child_agent, parent.principal))
+        if not self._a2a.may_reach(parent.agent, child_agent):
+            child.access = False
+            child.access_reason = (
+                f"A2A rules do not let '{parent.agent}' hand work to '{child_agent}'"
+            )
+            child.capabilities = {}
+        return child
 
     def issue_token(self, resolved: ResolvedAgent, audience: str, ttl: int = 300) -> str:
         """A short-lived token for ``audience`` (the service that will verify it)."""
@@ -548,12 +620,19 @@ class AuthEngine:
             )
         return VerifiedToken(claims, current)
 
+    @staticmethod
+    def _sod_key(request: AuthRequest, rule: str) -> tuple[str, str, str]:
+        # Case and surrounding spaces do not make a different resource; a missing resource is
+        # one shared resource (over-restrictive rather than skipped).
+        return (rule, request.user, request.resource.strip().casefold())
+
     def _sod_conflict(self, request: AuthRequest) -> str | None:
+        action = request.action.casefold()
         for rule in self._config.separation_of_duties:
-            if not any(fnmatch.fnmatchcase(request.action, a) for a in rule.actions):
+            if not any(fnmatch.fnmatchcase(action, a.casefold()) for a in rule.actions):
                 continue
-            done = self._sod_done.get((rule.name, request.user, request.resource), set())
-            others = sorted(a for a in done if a != request.action)
+            done = self._sod_done.get(self._sod_key(request, rule.name), set())
+            others = sorted(a for a in done if a != action)
             if others:
                 return (
                     f"Separation of duties ('{rule.name}'): '{request.user or 'service'}' "
@@ -562,10 +641,27 @@ class AuthEngine:
         return None
 
     def _sod_record(self, request: AuthRequest) -> None:
+        action = request.action.casefold()
         for rule in self._config.separation_of_duties:
-            if any(fnmatch.fnmatchcase(request.action, a) for a in rule.actions):
-                key = (rule.name, request.user, request.resource)
-                self._sod_done.setdefault(key, set()).add(request.action)
+            if any(fnmatch.fnmatchcase(action, a.casefold()) for a in rule.actions):
+                self._sod_done.setdefault(self._sod_key(request, rule.name), set()).add(action)
+
+    def _condition_context(self, request: AuthRequest) -> dict[str, object]:
+        """What A2A and approval conditions see: metadata keys at the top level and under
+        ``metadata``, with the request's own fields always winning."""
+        context: dict[str, object] = dict(request.metadata)
+        context.update(
+            {
+                "agent": request.agent,
+                "user": request.user,
+                "action": request.action,
+                "resource": request.resource,
+                "scope": request.scope,
+                "identity": request.identity,
+                "metadata": dict(request.metadata),
+            }
+        )
+        return context
 
     def _done(self, request: AuthRequest, decision: AuthDecision, record: bool) -> AuthDecision:
         if record:
@@ -611,8 +707,14 @@ class AuthEngine:
         duration: int | None = None,
         reason: str = "",
     ) -> DelegationGrant:
-        """Create a delegation from a user to an agent."""
-        return self._delegations.create(from_user, to_agent, actions, duration, reason)
+        """Create a delegation from a user to an agent. Refused for an agent with no profile,
+        and checked against the delegation rules with the user's roles."""
+        if to_agent not in self._config.profiles:
+            raise ValueError(f"no profile '{to_agent}' in the config: cannot delegate to it")
+        roles = self._principal(AuthRequest(agent=to_agent, user=from_user, action="")).roles
+        return self._delegations.create(
+            from_user, to_agent, actions, duration, reason, roles=sorted(roles)
+        )
 
     def revoke_delegation(self, delegation_id: str) -> bool:
         """Revoke an active delegation."""

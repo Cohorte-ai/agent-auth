@@ -18,6 +18,38 @@ import json
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 
+_GLOB = "*?["
+
+
+def literal_prefix(pattern: str) -> str:
+    """The part of a glob before its first wildcard."""
+    for i, ch in enumerate(pattern):
+        if ch in _GLOB:
+            return pattern[:i]
+    return pattern
+
+
+def covers(outer: str, inner: str) -> bool:
+    """True only when every action matching ``inner`` provably matches ``outer``.
+
+    Conservative: a wildcard in ``inner`` is never read as a literal character (``read:*`` is
+    not covered by ``read:[!s]*``). Covered cases: equal patterns; a literal ``inner`` that
+    ``outer`` matches; ``outer`` a literal prefix followed by a single trailing ``*`` and
+    ``inner``'s literal prefix starting with it."""
+    if outer == inner:
+        return True
+    if not any(ch in _GLOB for ch in inner):
+        return fnmatch.fnmatchcase(inner, outer)
+    if outer.endswith("*") and not any(ch in _GLOB for ch in outer[:-1]):
+        return literal_prefix(inner).startswith(outer[:-1])
+    return False
+
+
+def denial_matches(action: str, pattern: str) -> bool:
+    """Denials and limits match regardless of case: ``DELETE_users`` is still a ``delete_*``."""
+    return fnmatch.fnmatchcase(action.casefold(), pattern.casefold())
+
+
 ON_BEHALF_OF = "on_behalf_of"
 SERVICE = "service"
 IDENTITIES = (ON_BEHALF_OF, SERVICE)
@@ -77,7 +109,7 @@ class ResolvedAgent:
         if not self.access:
             return False, ["access"]
         for pattern, sources in self.denials.items():
-            if fnmatch.fnmatchcase(action, pattern):
+            if denial_matches(action, pattern):
                 return False, [f"{s}:{pattern}" for s in sources]
         matched = [
             f"{s}:{pattern}"
@@ -117,12 +149,12 @@ class ResolvedAgent:
         if self.access and child.access:
             for c, c_sources in child.capabilities.items():
                 for p, p_sources in self.capabilities.items():
-                    if fnmatch.fnmatchcase(c, p):  # the parent's pattern covers the child's
+                    if covers(p, c):  # the parent's pattern covers the child's
                         narrower = c
-                    elif fnmatch.fnmatchcase(p, c):  # the child's pattern covers the parent's
+                    elif covers(c, p):  # the child's pattern covers the parent's
                         narrower = p
                     else:
-                        continue
+                        continue  # no provable overlap: dropped (conservative)
                     sources = kept.setdefault(narrower, [])
                     for src in [*c_sources, *(f"{x}@{self.agent}" for x in p_sources)]:
                         if src not in sources:
@@ -187,7 +219,10 @@ def resolve(
         ok = SERVICE in allowed_by
         why = "service access" if ok else "the agent is not available as a service"
     else:
-        hit = sorted({principal.user} & set(allowed_by) | set(principal.roles) & set(allowed_by))
+        # Roles by name; users only as "user:<name>"; "service" is a keyword. A user named
+        # "finance" or "service" never matches a role or the keyword.
+        roles = {r for r in principal.roles if r != SERVICE and not r.startswith("user:")}
+        hit = sorted(({f"user:{principal.user}"} | roles) & set(allowed_by))
         ok = bool(hit)
         why = (
             f"access via {', '.join(hit)}"

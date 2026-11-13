@@ -198,6 +198,7 @@ def _parse_config(raw: dict[str, object]) -> AuthConfig:
                     max_duration=int(drule.get("max_duration", 86400)),
                     require_reason=bool(drule.get("require_reason", False)),
                     description=str(drule.get("description", "")),
+                    roles=[str(r) for r in _as_list(drule.get("roles"))],
                 )
             )
     delegation = DelegationConfig(
@@ -342,6 +343,7 @@ _DELEGATION_RULE = {
     "allowed_actions": _STRLIST,
     "max_duration": _INT,
     "require_reason": _BOOL,
+    "roles": _STRLIST,
     "description": _STR,
 }
 _A2A = {"default": _STR, "policies": None}

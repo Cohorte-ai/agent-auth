@@ -42,6 +42,18 @@ class A2AEvaluator:
                 raise ExpressionError(f"Error in A2A policy '{policy.name}': {'; '.join(problems)}")
             self._policies.append((policy, ast))
 
+    def may_reach(self, from_agent: str, to_agent: str) -> bool:
+        """Whether any action from ``from_agent`` to ``to_agent`` could be allowed: an allow
+        policy matching both agents, or a default of allow."""
+        if self._default == "allow":
+            return True
+        return any(
+            p.effect == "allow"
+            and fnmatch.fnmatch(from_agent, p.from_agent)
+            and fnmatch.fnmatch(to_agent, p.to_agent)
+            for p, _ in self._policies
+        )
+
     def evaluate(
         self,
         from_agent: str,
