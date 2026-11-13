@@ -70,7 +70,7 @@ A plain entry in `access` is always a role, never a user name: a user called `fi
 Grants replace the 0.1 `user_permissions_provider`, which let an agent do anything its user may
 do, far beyond the agent's own profile. That union still works in 0.2: its actions appear in
 `preview` with the source `user_permissions`, and a `FutureWarning` names the agent, action and
-user each time it decides something. Turn it off now with
+user the first time it decides each (agent, action) pair. Turn it off now with
 `resolution: {user_permissions: ignore}`. It is removed in 1.0.
 
 If a grant does not apply, the denial says why: `(granted to roles finance; 'bob' has sales)`
@@ -91,7 +91,8 @@ delegation cannot lift them. They are checked when the engine is built: keys mus
 an agent that has a profile (no other wildcard), values lists of patterns.
 
 Denials and limits match **regardless of case** (`payments:*` blocks `PAYMENTS:transfer`);
-capabilities match exactly. Use one spelling for your actions.
+capabilities match exactly. Use one spelling for your actions. An action that is empty or
+surrounded by spaces is refused.
 
 ---
 
@@ -149,6 +150,13 @@ engine.authorize(AuthRequest(agent="researcher", user="alice", action="read:docs
 ```
 
 `authorize` on its own resolves the sub-agent from scratch, as if no parent existed.
+
+With `resolved=`, `authorize` re-derives the chain and refuses a resolution that is **stale**
+(a delegation revoked, a role lost, a policy edited since it was derived): derive it again per
+task, or keep it short-lived. Every hop of the chain is checked against the A2A policies for
+the action; the request's scope must fit the scopes of every agent in the chain; and the
+approval tier is the strictest of the chain's (a parent that needs strong approval passes that
+on to its sub-agents).
 
 ---
 

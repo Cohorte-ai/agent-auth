@@ -75,23 +75,29 @@ engine.preview("assistant", Principal.user("alice", roles=["finance"]))  # for a
 
 ## Delegation to sub-agents (attenuation)
 
-`resolved.attenuate(child_agent, actions)` gives the child a ResolvedAgent containing only
-actions that both the child's own resolution and the parent's allow, for the same principal,
-never more. Tokens carry the chain, so a tool can see who delegated to whom.
+`engine.delegate(parent, child_agent)` gives the child a ResolvedAgent containing only actions
+that both the child's own resolution and the parent's allow, for the same principal, never more
+(patterns intersected conservatively: a wildcard is never read as text). The hand-off needs an
+A2A allow; at run time every hop is checked per action, scopes must fit every agent in the
+chain, and the approval tier is the chain's strictest. `authorize(request, resolved=...)`
+re-derives the chain and refuses a stale resolution. Tokens carry the chain.
 
 ## Tokens
 
 `engine.issue_token(resolved, audience, ttl)` returns a short-lived token (HMAC-SHA256 with a key
 the application provides) carrying agent, principal, identity mode, audience, expiry and the
 capability fingerprint. `engine.verify_token(token, audience)` refuses a wrong audience, an
-expired token, a bad signature, or a fingerprint that no longer matches the current policy
-(the policy changed since it was issued). For tool servers (MCP) that must check the caller.
+expired token, a token issued in the future or living over an hour, a non-canonical encoding,
+a bad signature, or a fingerprint that no longer matches the current resolution. Key rotation:
+a list of keys, the first signs. Tool servers then call `authorize(..., resolved=...)` so
+approval tiers, scopes and separation of duties apply.
 
 ## Separation of duties
 
-`separation_of_duties: [{name, actions: [create_payment, approve_payment], per: resource}]`:
-the same principal cannot perform two of the listed actions on the same resource. Recorded
-from allowed decisions in the engine (and its audit log when enabled).
+`separation_of_duties: [{name, actions: [create_payment, approve_payment]}]`: the same principal
+cannot perform two of the listed actions on the same resource (actions and resources compared
+regardless of case and surrounding spaces; a missing resource is one shared resource). Recorded
+from allowed decisions in the engine's memory, per process.
 
 ## Approval
 
@@ -100,9 +106,11 @@ guardrails flow control proposals; the docs say so. Removal not before 1.0.
 
 ## Compatibility
 
-- Every 0.1 config loads and decides the same way, except the 0.1.4 delegation fix.
-- `user_permissions_provider` keeps its 0.1 behaviour with a `DeprecationWarning` the first
-  time it grants something the agent's own resolution would not, pointing to `grants`.
+- Every 0.1 config loads and decides the same way, except the security fixes listed in the
+  CHANGELOG (delegations bound to the user, A2A conditions on request fields, case-insensitive
+  denials, session scopes, duplicate keys refused).
+- `user_permissions_provider` keeps its 0.1 behaviour with a `FutureWarning` the first time it
+  decides each (agent, action) pair, pointing to `grants`.
   `resolution: {user_permissions: ignore}` turns the union off now; 1.0 removes it.
 - New config keys are optional: `access`, `grants` (per profile), `separation_of_duties`,
   `resolution`.

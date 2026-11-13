@@ -193,6 +193,7 @@ Each rule in `rules`:
 | `allowed_actions` | `list[string]` | Actions that can be delegated |
 | `max_duration` | `int` | Max duration in seconds for this rule |
 | `require_reason` | `bool` | Whether a reason must be provided |
+| `roles` | `list[string]` | Who may delegate under this rule: the delegating user's roles (0.2). See [Delegation](delegation.md) |
 | `description` | `string` | Human-readable description |
 
 ```yaml

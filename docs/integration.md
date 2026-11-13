@@ -162,7 +162,8 @@ def authorize_agent_action(
     `user_permissions_provider` lets an agent do anything its user may do, beyond the agent's
     own profile. In 0.2, give the engine the user's roles (`user_roles=`) and declare per agent
     what each role unlocks (`grants:`); see [Resolution](resolution.md). The provider still
-    works, with a warning naming the agent, action and user each time it decides something;
+    works, with a warning naming the agent, action and user the first time it decides each
+    (agent, action) pair;
     `resolution: {user_permissions: ignore}` turns it off. It is removed in 1.0.
 
 By default, `agent-auth` does not check user-level permissions — it focuses on agent authorization. To integrate with an existing IAM system, provide a `user_permissions_provider` callback:

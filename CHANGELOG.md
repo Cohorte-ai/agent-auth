@@ -37,9 +37,15 @@ Three testers (a newcomer, a red team, a platform engineer) tested the first 0.2
 - **Config**: duplicate YAML keys are refused; precise errors for grant values and separation-of-duties actions.
 - Unknown agents have no access (except through the deprecated union, for compatibility); `preview` shows union actions; the audit log is private (0600) and records identity and provenance.
 
+An independent re-verification then confirmed those fixes (76 of 79 checks; 17,280 0.1 decisions unchanged) and found more, also fixed with tests:
+
+- `authorize(..., resolved=...)` re-derives the resolution and refuses a stale one (revoked delegation, lost role, policy edit); it checks A2A on every hop of a sub-agent chain, the scopes of every agent in the chain, and uses the chain's strictest approval tier.
+- Limits given as a generator were consumed by validation and silently empty.
+- Actions empty or surrounded by spaces are refused; A2A deny policies ignore case; approval conditions see `identity` (metadata cannot override it); delegations never apply to agents without a profile; a separation-of-duties action listed twice is a config error.
+
 ### Deprecated
 
-- `user_permissions_provider` union (an agent may do anything its user may do): emits a `FutureWarning` naming the agent, action and user when it decides something. Use `grants`; set `resolution: {user_permissions: ignore}` to turn it off now. Removed in 1.0.
+- `user_permissions_provider` union (an agent may do anything its user may do): emits a `FutureWarning` naming the agent, action and user the first time it decides each (agent, action) pair. Use `grants`; set `resolution: {user_permissions: ignore}` to turn it off now. Removed in 1.0.
 - Approval tiers keep working; new code should prefer theaios-guardrails flow control proposals.
 
 ### Compatibility

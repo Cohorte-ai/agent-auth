@@ -104,6 +104,8 @@ Available context fields depend on where the expression is used:
 | `agent` | `str` | The agent name |
 | `user` | `str` | The user name |
 | `scope` | `str` | The scope |
+| `identity` | `str` | `on_behalf_of` or `service` |
+| `metadata.<key>` | any | Request metadata (also reachable as `<key>`; the request's own fields always win) |
 
 ### A2A rule conditions
 
@@ -112,6 +114,10 @@ Available context fields depend on where the expression is used:
 | `action` | `str` | The requested action |
 | `from_agent` | `str` | Source agent name |
 | `to_agent` | `str` | Target agent name |
+| `user`, `resource`, `scope`, `identity`, `agent` | `str` | The request's fields (0.2; metadata cannot override them) |
+| `metadata.<key>` | any | Request metadata |
+
+A2A **deny** policies match the action regardless of case; allow policies match it exactly.
 
 ---
 
