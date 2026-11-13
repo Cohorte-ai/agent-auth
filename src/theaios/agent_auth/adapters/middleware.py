@@ -3,6 +3,16 @@
 These are reference implementations showing how to integrate agent-auth
 into web frameworks. Copy and adapt to your application.
 
+Two modes:
+
+- **Token** (recommended, 0.2): pass ``audience=``. The caller sends
+  ``Authorization: Bearer <token>`` issued by ``engine.issue_token`` for that audience; the
+  middleware verifies it and decides with ``engine.authorize(..., resolved=...)``, so the
+  caller's identity, sub-agent chain, approval tiers, scopes and separation of duties all apply.
+- **Headers** (0.1, no ``audience``): the agent and user come from ``X-Agent-Name`` and
+  ``X-User-Name``. **Anyone who can reach the service can claim any agent and any user**: use
+  this mode only behind a gateway that authenticates the caller and sets those headers itself.
+
 FastAPI example::
 
     from fastapi import FastAPI, Request, HTTPException
@@ -41,13 +51,75 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from theaios.agent_auth.engine import AuthEngine
-from theaios.agent_auth.types import AuthRequest
+from theaios.agent_auth.tokens import TokenError
+from theaios.agent_auth.types import AuthDecision, AuthRequest
+
+
+def _decide(
+    engine: AuthEngine,
+    headers: Any,
+    action: str,
+    resource: str,
+    audience: str | None,
+    agent_header: str,
+    user_header: str,
+    session_header: str,
+) -> tuple[int, dict[str, object]] | None:
+    """``None`` to proceed, or ``(status, body)`` to answer with."""
+    if audience is not None:
+        auth = str(headers.get("Authorization", ""))
+        if not auth.startswith("Bearer "):
+            return 401, {"error": "a Bearer token is required"}
+        try:
+            verified = engine.verify_token(auth[len("Bearer ") :], audience)
+        except TokenError as exc:
+            return 401, {"error": "invalid token", "reason": str(exc)}
+        claims = verified.claims
+        decision = engine.authorize(
+            AuthRequest(
+                agent=claims.agent,
+                user=claims.user,
+                action=action,
+                resource=resource,
+                identity=claims.identity,
+            ),
+            resolved=verified.resolved,
+        )
+    else:
+        agent = str(headers.get(agent_header, ""))
+        user = str(headers.get(user_header, ""))
+        if not agent or not user:
+            return 400, {"error": f"{agent_header} and {user_header} headers are required"}
+        decision = engine.authorize(
+            AuthRequest(
+                agent=agent,
+                user=user,
+                action=action,
+                resource=resource,
+                session_id=headers.get(session_header),
+            )
+        )
+    return _answer(decision)
+
+
+def _answer(decision: AuthDecision) -> tuple[int, dict[str, object]] | None:
+    if decision.is_denied:
+        return 403, {"error": "Authorization denied", "reason": decision.reason}
+    if decision.requires_approval:
+        return 403, {
+            "error": "Approval required",
+            "tier": decision.tier,
+            "reason": decision.reason,
+            "approval_policy": decision.approval_policy,
+        }
+    return None
 
 
 async def fastapi_auth_middleware(
     engine: AuthEngine,
     request: Any,
     call_next: Callable[..., Any],
+    audience: str | None = None,
 ) -> Any:
     """FastAPI middleware that checks agent-auth before processing requests.
 
@@ -81,47 +153,22 @@ async def fastapi_auth_middleware(
             "Install it with: pip install fastapi"
         ) from e
 
-    agent = request.headers.get("X-Agent-Name", "")
-    user = request.headers.get("X-User-Name", "")
-    session_id = request.headers.get("X-Session-Id")
-
-    if not agent or not user:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "X-Agent-Name and X-User-Name headers are required"},
-        )
+    import asyncio
 
     action = f"{request.method.lower()}:{request.url.path}"
-
-    auth_request = AuthRequest(
-        agent=agent,
-        user=user,
-        action=action,
-        resource=str(request.url),
-        session_id=session_id,
+    answer = await asyncio.to_thread(
+        _decide,
+        engine,
+        request.headers,
+        action,
+        str(request.url),
+        audience,
+        "X-Agent-Name",
+        "X-User-Name",
+        "X-Session-Id",
     )
-
-    decision = await engine.authorize_async(auth_request)
-
-    if decision.is_denied:
-        return JSONResponse(
-            status_code=403,
-            content={
-                "error": "Authorization denied",
-                "reason": decision.reason,
-            },
-        )
-
-    if decision.requires_approval:
-        return JSONResponse(
-            status_code=403,
-            content={
-                "error": "Approval required",
-                "tier": decision.tier,
-                "reason": decision.reason,
-                "approval_policy": decision.approval_policy,
-            },
-        )
+    if answer is not None:
+        return JSONResponse(status_code=answer[0], content=answer[1])
 
     response = await call_next(request)
     return response
@@ -132,6 +179,7 @@ def flask_auth_decorator(
     agent_header: str = "X-Agent-Name",
     user_header: str = "X-User-Name",
     session_header: str = "X-Session-Id",
+    audience: str | None = None,
 ) -> Callable[..., Callable[..., Any]]:
     """Create a Flask decorator factory for agent-auth checks.
 
@@ -165,46 +213,18 @@ def flask_auth_decorator(
                         "Flask is required for this decorator. Install it with: pip install flask"
                     ) from e
 
-                agent = request.headers.get(agent_header, "")
-                user = request.headers.get(user_header, "")
-                session_id = request.headers.get(session_header)
-
-                if not agent or not user:
-                    return (
-                        jsonify(
-                            {"error": f"{agent_header} and {user_header} headers are required"}
-                        ),
-                        400,
-                    )
-
-                auth_request = AuthRequest(
-                    agent=agent,
-                    user=user,
-                    action=action,
-                    resource=request.url,
-                    session_id=session_id,
+                answer = _decide(
+                    engine,
+                    request.headers,
+                    action,
+                    request.url,
+                    audience,
+                    agent_header,
+                    user_header,
+                    session_header,
                 )
-
-                decision = engine.authorize(auth_request)
-
-                if decision.is_denied:
-                    return (
-                        jsonify({"error": "Authorization denied", "reason": decision.reason}),
-                        403,
-                    )
-
-                if decision.requires_approval:
-                    return (
-                        jsonify(
-                            {
-                                "error": "Approval required",
-                                "tier": decision.tier,
-                                "reason": decision.reason,
-                                "approval_policy": decision.approval_policy,
-                            }
-                        ),
-                        403,
-                    )
+                if answer is not None:
+                    return jsonify(answer[1]), answer[0]
 
                 return f(*args, **kwargs)
 
