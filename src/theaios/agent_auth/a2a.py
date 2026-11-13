@@ -106,17 +106,29 @@ class A2AEvaluator:
             ):
                 continue
 
-            # Evaluate condition
-            try:
-                result = eval_expr(
-                    ast,
-                    context=eval_context,
-                    variables=self._variables,
-                )
-            except ExpressionError:
-                # Fail closed: a deny policy that cannot be evaluated denies; an allow policy
-                # that cannot be evaluated grants nothing.
-                result = policy.effect == "deny"
+            # Evaluate condition. A deny condition ignores case like its patterns: it is
+            # evaluated on the request as written and with action and agents in lower case,
+            # and denies if either matches.
+            contexts = [eval_context]
+            if policy.effect == "deny":
+                lowered = {
+                    **eval_context,
+                    "from_agent": from_agent.casefold(),
+                    "to_agent": to_agent.casefold(),
+                    "action": action.casefold(),
+                }
+                if lowered != eval_context:
+                    contexts.append(lowered)
+            result = False
+            for ctx in contexts:
+                try:
+                    result = bool(eval_expr(ast, context=ctx, variables=self._variables))
+                except ExpressionError:
+                    # Fail closed: a deny policy that cannot be evaluated denies; an allow
+                    # policy that cannot be evaluated grants nothing.
+                    result = policy.effect == "deny"
+                if result:
+                    break
 
             if not result:
                 continue

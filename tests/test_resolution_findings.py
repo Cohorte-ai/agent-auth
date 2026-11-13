@@ -643,3 +643,105 @@ def test_sessions_and_delegations_never_share_the_audit_file(tmp_path: Path) -> 
     audit = (tmp_path / "logs" / "agent-audit.log").read_text()
     assert '"action": "read:x"' in audit or '"action":"read:x"' in audit
     assert e.authorize(_req("alice", "deploy")).allowed
+
+
+# --- Adapter re-check (722c591) ----------------------------------------------------------------
+
+
+def _adapter(tmp_path: Path, extra: str = "", **kw: object) -> object:
+    pytest.importorskip("theaios.guardrails")
+    from theaios.guardrails.engine import Engine
+    from theaios.guardrails.types import PolicyConfig
+
+    from theaios.agent_auth.adapters.guardrails import GuardrailsAuthAdapter
+
+    return GuardrailsAuthAdapter(_engine(tmp_path, extra, **kw), Engine(PolicyConfig()))
+
+
+def test_guardrails_adapter_checks_the_tool_of_a_tool_call(tmp_path: Path) -> None:
+    adapter = _adapter(tmp_path, limits={"*": ["payments:*"]})
+    from theaios.guardrails.types import GuardEvent
+
+    def outcome(data: dict[str, object], scope: str = "tool_call") -> str:
+        ev = GuardEvent(scope=scope, agent="intern-bot", data=data)
+        return adapter.evaluate(ev, user="alice").outcome  # type: ignore[attr-defined, no-any-return]
+
+    # guardrails' LangChain and OpenAI Agents adapters send the tool as data["tool_name"]
+    assert outcome({"tool_name": "payments:transfer", "arguments": {}}) == "deny"
+    assert outcome({"tool_name": "read:docs", "arguments": {}}) == "allow"
+    # an event naming a harmless action and a limited tool is checked for both
+    assert outcome({"tool_name": "payments:transfer", "action": "read:docs"}) == "deny"
+    assert outcome({"arguments": {}}) == "deny"  # a tool call must name its tool
+    assert outcome({"action": ["payments:transfer"]}, scope="action") == "deny"  # not str()
+    assert outcome({"action": "read:x", "resource": ["inv-1"]}, scope="action") == "deny"
+
+
+def test_guardrails_adapter_takes_the_scope_from_the_app(tmp_path: Path) -> None:
+    adapter = _adapter(tmp_path, "  scoped: {role: reader, scopes: ['project:alpha']}\n")
+    from theaios.guardrails.types import GuardEvent
+
+    ev = GuardEvent(scope="action", agent="scoped", data={"action": "read:x"})
+    # the event's scope is its type, not an agent-auth scope: a scoped agent works
+    assert adapter.evaluate(ev, user="alice").outcome == "allow"  # type: ignore[attr-defined]
+    assert adapter.evaluate(ev, user="alice", scope="project:alpha").outcome == "allow"  # type: ignore[attr-defined]
+    assert adapter.evaluate(ev, user="alice", scope="project:beta").outcome == "deny"  # type: ignore[attr-defined]
+
+
+def test_a_sub_agent_cannot_escape_the_parents_approval_by_case(tmp_path: Path) -> None:
+    extra = (
+        "  db-parent: {role: everything}\n  db-child: {role: everything}\n"
+        "approval_policies:\n"
+        '  - {name: drop, condition: \'agent == "db-parent" and action == "db:drop"\', '
+        "tier: strong}\n"
+        "a2a:\n  default: allow\n"
+    )
+    e = _engine(tmp_path, extra)
+    child = e.delegate(e.resolve("db-parent", e.principal("alice")), "db-child")
+    for action in ("db:drop", "db:DROP"):
+        d = e.explain(_req("alice", action, agent="db-child"), resolved=child)
+        assert d.allowed and d.tier == "strong" and d.approval_policy == "drop@db-parent", action
+
+
+def test_a2a_deny_conditions_ignore_case(tmp_path: Path) -> None:
+    extra = (
+        "a2a:\n  default: allow\n  policies:\n"
+        "    - {name: no-transfer, from_agent: '*', to_agent: '*', effect: deny,\n"
+        '       condition: \'action == "transfer" or to_agent == "researcher"\'}\n'
+    )
+    e = _engine(tmp_path, extra)
+    for action, target in [("TRANSFER", "nightly"), ("read:x", "RESEARCHER")]:
+        d = e.authorize(_req("", action, agent="intern-bot", target_agent=target))
+        assert not d.allowed, (action, target)
+    assert e.authorize(_req("", "read:x", agent="intern-bot", target_agent="nightly")).allowed
+
+
+def test_middleware_decides_head_as_get(tmp_path: Path) -> None:
+    import asyncio
+
+    pytest.importorskip("starlette")
+    from theaios.agent_auth.adapters.middleware import fastapi_auth_middleware
+
+    path = tmp_path / "agent_auth.yaml"
+    path.write_text(
+        BASE.replace(
+            "role: reader\n    access", "role: everything\n    deny: ['get:/admin*']\n    access"
+        )
+        + "audit:\n  enabled: false\n"
+    )
+    e = AuthEngine(load_config(str(path)), user_roles=lambda u: ROLES.get(u, []), token_key=KEY)
+    token = e.issue_token(e.resolve("assistant", e.principal("alice")), "api")
+
+    class URL:
+        path = "/admin/users"
+
+    class Req:
+        def __init__(self, method: str) -> None:
+            self.method, self.url = method, URL()
+            self.headers = {"Authorization": f"Bearer {token}"}
+
+    async def ok(_req: object) -> str:
+        return "ran"
+
+    for method in ("GET", "HEAD", "head"):  # HEAD runs the GET handler
+        out = asyncio.run(fastapi_auth_middleware(e, Req(method), ok, audience="api"))
+        assert out != "ran", method

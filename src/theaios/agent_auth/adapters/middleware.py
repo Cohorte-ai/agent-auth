@@ -161,7 +161,9 @@ async def fastapi_auth_middleware(
 
     import asyncio
 
-    action = f"{request.method.lower()}:{request.url.path}"
+    # HEAD runs the GET handler: decide it as GET, so a rule on get:<path> covers it.
+    method = "get" if request.method.upper() == "HEAD" else request.method.lower()
+    action = f"{method}:{request.url.path}"
     answer = await asyncio.to_thread(
         _decide,
         engine,

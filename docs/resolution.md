@@ -90,8 +90,9 @@ Limits apply after everything, including grants and delegations. A config change
 delegation cannot lift them. They are checked when the engine is built: keys must be `"*"` or
 an agent that has a profile (no other wildcard), values lists of patterns.
 
-Denials, limits, approval conditions and A2A deny policies match **regardless of case**
-(`payments:*` blocks `PAYMENTS:transfer`; an approval on `db:delete` covers `db:DELETE`);
+Denials, limits, approval conditions and A2A deny policies (patterns and conditions) match
+**regardless of case** (`payments:*` blocks `PAYMENTS:transfer`; an approval on `db:delete`
+covers `db:DELETE`, for the agent and for its sub-agents);
 capabilities and allow policies match exactly. Use one spelling for your actions. An action that is empty or
 surrounded by spaces, or containing control, invisible or look-alike (non-NFKC) characters, is
 refused. A request scope is a value, never a pattern: a scope containing `*`, `?` or `[` is

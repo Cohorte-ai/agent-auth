@@ -500,20 +500,21 @@ class AuthEngine:
             request.action, eval_context, default_tier
         )
         # Restrictions ignore case: an approval written for "db:delete" also covers
-        # "db:DELETE" (evaluated on the lower-case action too; the stricter tier wins).
-        if request.action.casefold() != request.action:
-            lowered = {**eval_context, "action": request.action.casefold()}
-            t2, p2, e2 = self._approval.explain(request.action.casefold(), lowered, default_tier)
-            if _TIER_ORDER.get(t2, 0) > _TIER_ORDER.get(tier, 0):
-                tier, approval_policy, eval_error = t2, p2, e2
-        # A sub-agent inherits every approval its chain would need: evaluate the policies as
-        # each agent of the chain and keep the strictest tier.
-        for ancestor in resolved.chain:
-            t2, p2, e2 = self._approval.explain(
-                request.action, {**eval_context, "agent": ancestor}, default_tier
-            )
-            if _TIER_ORDER.get(t2, 0) > _TIER_ORDER.get(tier, 0):
-                tier, approval_policy, eval_error = t2, f"{p2}@{ancestor}" if p2 else "", e2
+        # "db:DELETE" (evaluated on the lower-case action too). A sub-agent inherits every
+        # approval its chain would need: the policies are evaluated as each agent of the
+        # chain too, with both spellings. The strictest tier wins.
+        actions = list(dict.fromkeys([request.action, request.action.casefold()]))
+        for who in [None, *resolved.chain]:
+            for act in actions:
+                if who is None and act == request.action:
+                    continue  # evaluated above
+                ctx = {**eval_context, "action": act}
+                if who is not None:
+                    ctx["agent"] = who
+                t2, p2, e2 = self._approval.explain(act, ctx, default_tier)
+                if _TIER_ORDER.get(t2, 0) > _TIER_ORDER.get(tier, 0):
+                    tier, eval_error = t2, e2
+                    approval_policy = f"{p2}@{who}" if p2 and who else p2
 
         requires_approval = tier in ("soft", "strong")
         if not requires_approval:

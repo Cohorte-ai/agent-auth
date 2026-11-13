@@ -259,9 +259,9 @@ from theaios.agent_auth.adapters.guardrails import GuardrailsAuthAdapter
 adapter = GuardrailsAuthAdapter(
     auth_config=config,
     guardrails_engine=engine,
-    default_user="system",
+    default_user=None,          # None: events without a user are service requests
 )
-decision = adapter.evaluate(event, user="alice")
+decision = adapter.evaluate(event, user="alice", scope="project:acme")
 ```
 
 ---

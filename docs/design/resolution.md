@@ -30,6 +30,10 @@ Trusts (out of scope): the application code calling the engine (it can call tool
 the `user_roles` function (it is the identity provider); the config file and the code limits;
 the secrecy of the token key; the clock. The engine decides; it does not authenticate users.
 
+In the adapters, the application builds the request's identity (agent, user, session,
+target agent, scope; in token mode, the token); what the model can influence (the tool name,
+action and resource of a guardrails event; the HTTP method, path and headers) is checked.
+
 ## The model
 
 ```

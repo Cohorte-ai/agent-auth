@@ -65,6 +65,21 @@ The adapter:
 4. If auth requires approval, returns `Decision(outcome="require_approval")`
 5. If auth passes, delegates to the guardrails engine
 
+**Which action is checked.** For a `tool_call` event, the tool: `data["tool_name"]`, as
+guardrails' LangChain and OpenAI Agents adapters send it. For an event with `data["action"]`,
+that action. An event carrying both is checked for both (each must be allowed; the strictest
+approval tier wins). Other events (`input`, `output`) are checked as their type, as in 0.1.
+A `tool_call` without `tool_name`, or a non-string `tool_name`, `action` or `resource`, is
+denied. Since 0.2 a tool call is checked as its tool: an agent that was allowed `tool_call` in
+0.1 now needs the tools themselves in its profile.
+
+**Scope.** The event's `scope` is its type (`input`, `tool_call`...), not an agent-auth scope.
+Pass the request's scope yourself: `adapter.evaluate(event, user="alice", scope="project:acme")`.
+Without one, scope checks are skipped, as for any request without a scope.
+
+**What the adapter trusts.** The agent, session and target agent come from the event as your
+code builds it; the tool name, action and resource may come from the model and are checked.
+
 ---
 
 ## HTTP middleware

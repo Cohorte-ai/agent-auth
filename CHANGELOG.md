@@ -56,6 +56,13 @@ A final red-team pass found the core held (resolution, attenuation, tokens, iden
 - The guardrails adapter built a bare engine from the config (no code limits, no user roles, separate separation-of-duties state) and attributed user-less events to a user called `system` (and that account's delegations): it now accepts the application's `AuthEngine`, and an event without a user is a service request.
 - Approval conditions and A2A deny policies (agents and action) ignore case; request scopes containing wildcards are refused; sessions, delegations and the audit log never share a file when the audit path is custom (they used to overwrite each other).
 
+A re-check of the integration paths confirmed those fixes (token-mode middleware, Flask decorator, guardrails adapter, 150 concurrent separation-of-duties races) and found more, also fixed with tests:
+
+- The guardrails adapter checked a `tool_call` event as the action `tool_call`, never the tool: denials, limits and approval policies on tool names did not apply to tool calls from guardrails' LangChain and OpenAI Agents adapters. It now checks `data["tool_name"]` (and `data["action"]` when present, both when both are), denies a tool call without a tool name and non-string fields. Also in 0.1.x.
+- The guardrails adapter passed the event type (`input`, `tool_call`...) as the agent-auth scope: an agent with `scopes:` was denied every event, and an event with an empty type skipped scope checks. The scope now comes from the application: `evaluate(event, user, scope=...)`.
+- A sub-agent escaped its parent's approval policy by changing the action's case (`db:DROP`); A2A deny conditions now ignore case like their patterns.
+- The FastAPI middleware decides `HEAD` as `get` (HEAD runs the GET handler, so a denial on `get:/admin*` did not cover it).
+
 ### Deprecated
 
 - `user_permissions_provider` union (an agent may do anything its user may do): emits a `FutureWarning` naming the agent, action and user the first time it decides each (agent, action) pair. Use `grants`; set `resolution: {user_permissions: ignore}` to turn it off now. Removed in 1.0.
@@ -63,7 +70,7 @@ A final red-team pass found the core held (resolution, attenuation, tokens, iden
 
 ### Compatibility
 
-Every 0.1 config loads and decides as before (all 0.1 tests pass unchanged); new keys are optional.
+Every 0.1 config loads and decides as before (all 0.1 tests pass unchanged); new keys are optional. Two adapter changes can deny what 0.1 allowed: the guardrails adapter checks tool calls as their tool (an agent allowed `tool_call` needs the tools), and the FastAPI middleware checks `HEAD` as `get`.
 
 ## [0.1.4] - 2026-11-11
 

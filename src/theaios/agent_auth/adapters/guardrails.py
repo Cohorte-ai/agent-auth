@@ -73,6 +73,7 @@ class GuardrailsAuthAdapter:
         event: GuardEvent,
         user: str | None = None,
         session_id: str | None = None,
+        scope: str | None = None,
     ) -> GuardrailsDecision:
         """Evaluate with auth check, then guardrails.
 
@@ -84,6 +85,15 @@ class GuardrailsAuthAdapter:
             User making the request. Falls back to default_user.
         session_id : str, optional
             Session ID for session-based auth.
+        scope : str, optional
+            The agent-auth scope of the request (``project:acme``), set by your application.
+            The event's own ``scope`` is its type (input, tool_call...), never an agent-auth
+            scope.
+
+        The action checked is the tool for a ``tool_call`` event (``data["tool_name"]``),
+        ``data["action"]`` when the event carries one, and the event type otherwise. An event
+        carrying both is checked for both. A non-string ``tool_name``, ``action`` or
+        ``resource``, or a ``tool_call`` event without ``tool_name``, is denied.
 
         Returns
         -------
@@ -93,40 +103,52 @@ class GuardrailsAuthAdapter:
         """
         from theaios.guardrails.types import Decision
 
+        def deny(reason: str) -> GuardrailsDecision:
+            return Decision(outcome="deny", reason=f"Auth denied: {reason}", severity="high")
+
+        names, problem = _event_actions(event)
+        resource = event.data.get("resource", "")
+        if not problem and resource is not None and not isinstance(resource, str):
+            problem = f"event field 'resource' must be a string, got {type(resource).__name__}"
+        if problem:
+            return deny(problem)
+
         effective_user = user or self._default_user or ""
-
-        # Determine action from event
-        action = event.data.get("action", event.scope)
-        if isinstance(action, str):
-            action_str = action
-        else:
-            action_str = str(action)
-
-        # Run auth check
-        auth_request = AuthRequest(
-            agent=event.agent,
-            user=effective_user,
-            identity="on_behalf_of" if effective_user else "service",
-            action=action_str,
-            resource=str(event.data.get("resource", "")),
-            session_id=session_id or event.session_id,
-            scope=event.scope,
-            target_agent=event.target_agent,
-        )
-        auth_decision = self._auth_engine.authorize(auth_request)
-
-        if auth_decision.is_denied:
-            return Decision(
-                outcome="deny",
-                reason=f"Auth denied: {auth_decision.reason}",
-                severity="high",
+        requests = [
+            AuthRequest(
+                agent=event.agent,
+                user=effective_user,
+                identity="on_behalf_of" if effective_user else "service",
+                action=name,
+                resource=resource or "",
+                session_id=session_id or event.session_id,
+                scope=scope or "",
+                target_agent=event.target_agent,
             )
+            for name in names
+        ]
+        # Decide every name before recording any (separation of duties records allowed
+        # actions): a denial is then logged by authorize.
+        for request in requests:
+            if self._auth_engine.explain(request).is_denied:
+                return deny(self._auth_engine.authorize(request).reason)
 
-        if auth_decision.requires_approval:
+        strictest = None
+        for request in requests:
+            auth_decision = self._auth_engine.authorize(request)
+            if auth_decision.is_denied:
+                return deny(auth_decision.reason)
+            if auth_decision.requires_approval and (
+                strictest is None
+                or _TIERS.get(auth_decision.tier, 0) > _TIERS.get(strictest.tier, 0)
+            ):
+                strictest = auth_decision
+
+        if strictest is not None:
             return Decision(
                 outcome="require_approval",
-                reason=f"Auth requires {auth_decision.tier} approval: {auth_decision.reason}",
-                tier=auth_decision.tier,
+                reason=f"Auth requires {strictest.tier} approval: {strictest.reason}",
+                tier=strictest.tier,
                 severity="medium",
             )
 
@@ -138,8 +160,27 @@ class GuardrailsAuthAdapter:
         event: GuardEvent,
         user: str | None = None,
         session_id: str | None = None,
+        scope: str | None = None,
     ) -> GuardrailsDecision:
         """Async version of evaluate."""
         import asyncio
 
-        return await asyncio.to_thread(self.evaluate, event, user, session_id)
+        return await asyncio.to_thread(self.evaluate, event, user, session_id, scope)
+
+
+_TIERS = {"autonomous": 0, "soft": 1, "strong": 2}
+
+
+def _event_actions(event: GuardEvent) -> tuple[list[str], str]:
+    """The action names an event asks for, or the reason it is refused."""
+    names: list[str] = []
+    for key in ("tool_name", "action"):
+        if key in event.data:
+            value = event.data[key]
+            if not isinstance(value, str):
+                return [], f"event field '{key}' must be a string, got {type(value).__name__}"
+            if value not in names:
+                names.append(value)
+    if event.scope == "tool_call" and "tool_name" not in event.data:
+        return [], "a tool_call event must name its tool in data['tool_name']"
+    return names or [event.scope], ""
