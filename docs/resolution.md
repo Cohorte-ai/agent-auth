@@ -92,7 +92,8 @@ an agent that has a profile (no other wildcard), values lists of patterns.
 
 Denials and limits match **regardless of case** (`payments:*` blocks `PAYMENTS:transfer`);
 capabilities match exactly. Use one spelling for your actions. An action that is empty or
-surrounded by spaces is refused.
+surrounded by spaces, or containing control, invisible or look-alike (non-NFKC) characters, is
+refused.
 
 ---
 
@@ -154,9 +155,11 @@ engine.authorize(AuthRequest(agent="researcher", user="alice", action="read:docs
 With `resolved=`, `authorize` re-derives the chain and refuses a resolution that is **stale**
 (a delegation revoked, a role lost, a policy edited since it was derived): derive it again per
 task, or keep it short-lived. Every hop of the chain is checked against the A2A policies for
-the action; the request's scope must fit the scopes of every agent in the chain; and the
-approval tier is the strictest of the chain's (a parent that needs strong approval passes that
-on to its sub-agents).
+the action; the request's scope, when it carries one, must fit the scopes of every agent in the
+chain (a request without a scope skips scope checks, as in 0.1); and the approval tier is the
+strictest of the chain's: the agents' `default_tier`, and the approval policies evaluated as each
+agent of the chain (a parent that needs strong approval passes that on to its sub-agents).
+Chains are limited to 16 agents. `authorize_async` takes `resolved=` too.
 
 ---
 

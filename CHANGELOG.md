@@ -43,6 +43,13 @@ An independent re-verification then confirmed those fixes (76 of 79 checks; 17,2
 - Limits given as a generator were consumed by validation and silently empty.
 - Actions empty or surrounded by spaces are refused; A2A deny policies ignore case; approval conditions see `identity` (metadata cannot override it); delegations never apply to agents without a profile; a separation-of-duties action listed twice is a config error.
 
+A second re-verification confirmed all of those and found more, also fixed with tests:
+
+- Approval policies are evaluated as each agent of a sub-agent chain (a parent's policy requiring strong approval applied only to the parent); `authorize_async` takes `resolved=`.
+- The HTTP middleware has a token mode (`audience=`: Bearer token, `verify_token`, `authorize` with the token's resolution); header mode, which trusts `X-Agent-Name`/`X-User-Name`, is documented as trusted-gateway only.
+- Separation of duties holds under concurrency (one lock around check and record) and normalises user names.
+- Actions with control, invisible or look-alike characters are refused; chains are limited to 16 agents; the user's roles are looked up once per resolution, not once per delegation; reasons name the parent agent for inherited denials and grants.
+
 ### Deprecated
 
 - `user_permissions_provider` union (an agent may do anything its user may do): emits a `FutureWarning` naming the agent, action and user the first time it decides each (agent, action) pair. Use `grants`; set `resolution: {user_permissions: ignore}` to turn it off now. Removed in 1.0.

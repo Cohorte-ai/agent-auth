@@ -65,6 +65,16 @@ The adapter:
 
 For web applications and API servers, `agent-auth` can be used as HTTP middleware to gate incoming requests.
 
+!!! warning "Who is calling?"
+    The pattern below takes the agent and user from request headers. Anyone who can reach the
+    service can then claim any agent and any user: use it only behind a gateway that
+    authenticates the caller and sets those headers itself. Otherwise use **token mode**
+    (0.2): the shipped `fastapi_auth_middleware(engine, request, call_next, audience="...")`
+    and `flask_auth_decorator(engine, audience="...")` require `Authorization: Bearer <token>`
+    (from `engine.issue_token`), verify it, and decide with the token's resolution, so the
+    caller's identity, sub-agent chain, approval tiers, scopes and separation of duties apply.
+    See [Resolution](resolution.md#tokens-for-tool-servers).
+
 ### Installation
 
 ```bash

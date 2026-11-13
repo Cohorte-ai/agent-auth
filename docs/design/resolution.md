@@ -64,10 +64,10 @@ baseline(agent) ∪ grants[agent][role] for each of the principal's roles     (a
 ```python
 engine = AuthEngine(config, limits={"*": ["payments:*"]}, user_roles=lambda u: idp.roles(u))
 
-resolved = engine.resolve("assistant", Principal.user("alice"))      # or Principal.service()
-resolved.capabilities["read:*"]     # [Provenance("baseline"), ...]
+resolved = engine.resolve("assistant", engine.principal("alice"))   # or principal(service=True)
+resolved.capabilities["read:*"]     # ["baseline", ...]  (source strings)
 engine.explain(request)             # decision + the capability or denial that decided it
-engine.preview("assistant", Principal.user("alice", roles=["finance"]))  # for admins
+engine.preview("assistant", Principal.for_user("alice", roles=["finance"]))  # for admins
 ```
 
 `authorize(request)` keeps its signature. A request carries `user` (on behalf of) as today, or
