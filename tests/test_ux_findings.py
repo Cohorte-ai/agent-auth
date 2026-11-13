@@ -178,3 +178,27 @@ def test_cli_check_shows_brackets_verbatim(tmp_path: Path) -> None:
         main, ["-c", str(path), "check", "--agent", "[bot]", "--user", "u", "--action", "[act]"]
     )
     assert "'[act]'" in result.output and "'[bot]'" in result.output
+
+
+def test_a_delegation_applies_only_to_the_user_who_granted_it(tmp_path: Path) -> None:
+    import os
+
+    path = tmp_path / "agent_auth.yaml"
+    path.write_text(BASE + "audit:\n  enabled: false\n")
+    cwd = os.getcwd()
+    os.chdir(tmp_path)  # delegations are stored under ./.agent_auth
+    try:
+        engine = AuthEngine(load_config(str(path)))
+        engine.create_delegation(
+            from_user="bob",
+            to_agent="finbot",
+            actions=["send_report"],
+            duration=600,
+            reason="weekly",
+        )
+        bob = engine.authorize(AuthRequest(agent="finbot", user="bob", action="send_report"))
+        alice = engine.authorize(AuthRequest(agent="finbot", user="alice", action="send_report"))
+    finally:
+        os.chdir(cwd)
+    assert bob.allowed
+    assert not alice.allowed

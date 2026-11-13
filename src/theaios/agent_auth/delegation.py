@@ -182,10 +182,12 @@ class DelegationManager:
         self._save()
         return grant
 
-    def check(self, agent: str, action: str) -> DelegationGrant | None:
+    def check(self, agent: str, action: str, user: str | None = None) -> DelegationGrant | None:
         """Check if an agent has an active delegation for an action.
 
-        Returns the matching delegation grant or None.
+        With ``user``, only a delegation granted by that user counts: a user's delegation
+        applies when the agent acts for that user, never for someone else. The engine always
+        passes it. Returns the matching delegation grant or None.
         """
         now = datetime.now(timezone.utc)
 
@@ -193,6 +195,8 @@ class DelegationManager:
             if grant.status != "active":
                 continue
             if grant.to_agent != agent:
+                continue
+            if user is not None and grant.from_user != user:
                 continue
 
             # Check expiry
