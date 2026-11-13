@@ -629,7 +629,9 @@ def validate_config(config: AuthConfig) -> list[str]:
             errors.append(f"{prefix}: duplicate name '{sod.name}'")
         else:
             seen_sod.add(sod.name)
-        if len({a.casefold() for a in sod.actions}) < 2:
+        if len({a.casefold() for a in sod.actions}) != len(sod.actions):
+            errors.append(f"{prefix} ({sod.name}): an action is listed twice")
+        elif len(sod.actions) < 2:
             errors.append(f"{prefix} ({sod.name}): 'actions' needs at least two different actions")
     for name, profile in config.profiles.items():
         for grant_role, actions in profile.grants.items():

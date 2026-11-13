@@ -320,3 +320,82 @@ def test_service_principal_with_a_user_is_refused(tmp_path: Path) -> None:
               "--action", "read:x"],
     )  # fmt: skip
     assert result.exit_code == 2 and "do not pass --user" in result.output
+
+
+# --- Re-verification (round 2) ---------------------------------------------------------------------
+
+CHAIN = """
+  a-agent: {role: everything, scopes: ["project:acme"], default_tier: strong}
+  b-agent: {role: everything}
+  c-agent: {role: everything}
+a2a:
+  default: deny
+  policies:
+    - {name: a-b, from_agent: a-agent, to_agent: b-agent, action: "read:*", effect: allow}
+    - {name: b-c, from_agent: b-agent, to_agent: c-agent, effect: allow}
+"""
+
+
+def _chain_engine(tmp_path: Path) -> AuthEngine:
+    path = tmp_path / "agent_auth.yaml"
+    path.write_text(BASE + CHAIN + "audit:\n  enabled: false\n")
+    return AuthEngine(load_config(str(path)), user_roles=lambda u: ROLES.get(u, []))
+
+
+def test_limits_given_as_a_generator_still_apply(tmp_path: Path) -> None:
+    e = _engine(tmp_path, limits={"*": (x for x in ["payments:*"])})
+    assert not e.authorize(_req("", "payments:transfer", agent="intern-bot")).allowed
+
+
+def test_a_sub_agent_keeps_the_parents_scopes_tier_and_every_hop(tmp_path: Path) -> None:
+    e = _chain_engine(tmp_path)
+    a = e.resolve("a-agent", e.principal("alice"))
+    b = e.delegate(a, "b-agent")
+    c = e.delegate(b, "c-agent")
+    out = e.authorize(_req("alice", "read:x", agent="b-agent", scope="project:secret"), resolved=b)
+    assert not out.allowed  # the parent is scoped to project:acme
+    tier = e.explain(_req("alice", "read:x", agent="b-agent", scope="project:acme"), resolved=b)
+    assert tier.allowed and tier.tier == "strong"  # inherited from the parent
+    write = e.authorize(_req("alice", "write:x", agent="c-agent", scope="project:acme"), resolved=c)
+    assert not write.allowed and "'a-agent' delegated to 'b-agent'" in write.reason
+
+
+def test_a_stale_resolution_is_refused(tmp_path: Path) -> None:
+    roles = {"alice": ["finance"]}
+    e = _engine(tmp_path, user_roles=lambda u: roles.get(u, []))
+    snapshot = e.resolve("assistant", e.principal("alice"))
+    roles["alice"] = ["sales"]
+    d = e.authorize(_req("alice", "approve_invoice"), resolved=snapshot)
+    assert not d.allowed and "stale" in d.reason
+
+
+def test_actions_with_surrounding_spaces_are_refused(tmp_path: Path) -> None:
+    e = _engine(tmp_path, SOD, limits={"intern-bot": ["delete_*"]})
+    for action in (" delete_users", "delete_users ", ""):
+        assert not e.authorize(_req("", action, agent="intern-bot")).allowed, repr(action)
+
+
+def test_a2a_deny_ignores_case(tmp_path: Path) -> None:
+    extra = (
+        "a2a:\n  default: allow\n  policies:\n"
+        "    - {name: no-del, from_agent: '*', to_agent: '*', action: 'delete_*', effect: deny}\n"
+    )
+    e = _engine(tmp_path, extra)
+    d = e.authorize(_req("", "DELETE_x", agent="intern-bot", target_agent="researcher"))
+    assert not d.allowed
+
+
+def test_approval_conditions_see_identity_not_metadata(tmp_path: Path) -> None:
+    extra = (
+        "approval_policies:\n  - {name: humans, condition: 'identity != \"service\"', tier: soft}\n"
+    )
+    e = _engine(tmp_path, extra)
+    d = e.authorize(_req("bob", "read:x", metadata={"identity": "service"}))
+    assert d.requires_approval and d.tier == "soft"
+
+
+def test_duplicate_separation_of_duties_actions_are_refused(tmp_path: Path) -> None:
+    path = tmp_path / "bad.yaml"
+    path.write_text(BASE + "separation_of_duties:\n  - {name: p, actions: [a, b, b]}\n")
+    with pytest.raises(ConfigError, match="listed twice"):
+        load_config(str(path))

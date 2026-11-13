@@ -231,6 +231,20 @@ class AuthEngine:
                         record,
                     )
 
+        # An action with surrounding spaces could slip past a pattern and then be trimmed by the
+        # tool that runs it: refuse it.
+        if not request.action or request.action != request.action.strip():
+            return self._done(
+                request,
+                AuthDecision(
+                    allowed=False,
+                    reason=f"Invalid action {request.action!r}: empty or surrounded by spaces",
+                    evaluation_time_ms=(time.perf_counter() - start) * 1000,
+                    provenance=["action"],
+                ),
+                record,
+            )
+
         # Step 2: Who is the agent acting for? One identity, never mixed.
         if request.identity not in IDENTITIES:
             return self._done(
@@ -284,7 +298,25 @@ class AuthEngine:
                 ),
                 record,
             )
-        resolved = given if given is not None else self.resolve(request.agent, principal)
+        if given is not None:
+            # A resolution is a snapshot: re-derive it now (revocations, role changes, policy
+            # edits) and refuse it if it no longer matches, as verify_token does for tokens.
+            fresh = self._rederive([*given.chain, request.agent], principal)
+            if fresh.fingerprint != given.fingerprint:
+                return self._done(
+                    request,
+                    AuthDecision(
+                        allowed=False,
+                        reason="The resolution passed is stale: what the agent may do changed "
+                        "since it was derived (revocation, roles, policy); derive it again",
+                        evaluation_time_ms=(time.perf_counter() - start) * 1000,
+                        provenance=["access"],
+                    ),
+                    record,
+                )
+            resolved = fresh
+        else:
+            resolved = self.resolve(request.agent, principal)
 
         # Step 3: Access, denials (profile deny, code limits) and scope
         allowed, provenance = resolved.check(request.action)
@@ -319,12 +351,22 @@ class AuthEngine:
                 ),
                 record,
             )
-        if profile and request.scope and not check_scope(profile, request.scope):
+        scope_denied = bool(
+            request.scope
+            and (
+                (profile is not None and not check_scope(profile, request.scope))
+                or (
+                    resolved.scopes
+                    and not any(fnmatch.fnmatch(request.scope, x) for x in resolved.scopes)
+                )
+            )
+        )
+        if scope_denied:
             return self._done(
                 request,
                 AuthDecision(
                     allowed=False,
-                    reason=f"Scope '{request.scope}' not allowed by profile '{profile.name}'",
+                    reason=f"Scope '{request.scope}' not allowed for '{request.agent}'",
                     evaluation_time_ms=(time.perf_counter() - start) * 1000,
                     provenance=["scope"],
                 ),
@@ -367,23 +409,25 @@ class AuthEngine:
         # Step 7: Check A2A policies. A sub-agent's resolution (``delegate``) carries the agent
         # that handed it the work: that hand-off must be allowed too, for this action.
         if given is not None and given.chain:
-            ok, why = self._a2a.evaluate(
-                from_agent=given.chain[-1],
-                to_agent=request.agent,
-                action=request.action,
-                context=self._condition_context(request),
-            )
-            if not ok:
-                return self._done(
-                    request,
-                    AuthDecision(
-                        allowed=False,
-                        reason=f"{why} ('{given.chain[-1]}' delegated to '{request.agent}')",
-                        evaluation_time_ms=(time.perf_counter() - start) * 1000,
-                        provenance=["a2a"],
-                    ),
-                    record,
+            hops = [*given.chain, request.agent]
+            for src, dst in zip(hops, hops[1:]):
+                ok, why = self._a2a.evaluate(
+                    from_agent=src,
+                    to_agent=dst,
+                    action=request.action,
+                    context=self._condition_context(request),
                 )
+                if not ok:
+                    return self._done(
+                        request,
+                        AuthDecision(
+                            allowed=False,
+                            reason=f"{why} ('{src}' delegated to '{dst}')",
+                            evaluation_time_ms=(time.perf_counter() - start) * 1000,
+                            provenance=["a2a"],
+                        ),
+                        record,
+                    )
         if request.target_agent:
             a2a_allowed, a2a_reason = self._a2a.evaluate(
                 from_agent=request.agent,
@@ -410,21 +454,12 @@ class AuthEngine:
             return self._done(request, decision, record)
 
         # Step 8: Evaluate approval policies
-        default_tier = profile.default_tier if profile else "autonomous"
+        default_tier = resolved.default_tier
         # Metadata keys are reachable both as `metadata.key` (as documented) and, for
         # compatibility, at the top level; the request's own fields always win, so metadata
         # cannot overwrite the resource or user a policy checks.
-        eval_context: dict[str, object] = dict(request.metadata)
-        eval_context.update(
-            {
-                "agent": request.agent,
-                "user": request.user,
-                "action": request.action,
-                "resource": request.resource,
-                "scope": request.scope,
-                "metadata": dict(request.metadata),
-            }
-        )
+        # Request fields (identity included) win over metadata.
+        eval_context: dict[str, object] = self._condition_context(request)
 
         tier, approval_policy, eval_error = self._approval.explain(
             request.action, eval_context, default_tier
@@ -583,6 +618,14 @@ class AuthEngine:
         """Same as :meth:`resolve`: what an administrator sees before granting access."""
         return self.resolve(agent, principal)
 
+    def _rederive(self, agents: list[str], principal: Principal) -> ResolvedAgent:
+        """Resolve a delegation chain from scratch: the first agent, attenuated by each next,
+        with the A2A reach of each hop."""
+        current = self.resolve(agents[0], principal)
+        for agent in agents[1:]:
+            current = self.delegate(current, agent)
+        return current
+
     def delegate(self, parent: ResolvedAgent, child_agent: str) -> ResolvedAgent:
         """What ``child_agent`` may do when ``parent`` hands it work: the intersection of the
         child's own resolution and the parent's, for the same principal."""
@@ -610,10 +653,7 @@ class AuthEngine:
             principal = self._principal(
                 AuthRequest(agent=claims.agent, user=claims.user, action="")
             )
-        agents = [*claims.chain, claims.agent]
-        current = self.resolve(agents[0], principal)
-        for agent in agents[1:]:
-            current = current.attenuate(self.resolve(agent, principal))
+        current = self._rederive([*claims.chain, claims.agent], principal)
         if current.fingerprint != claims.fingerprint:
             raise tokens.TokenError(
                 "the agent's permissions differ from when the token was issued: they changed "
@@ -743,7 +783,10 @@ def _check_limits(
                 f"limits name agent '{agent}', which has no profile in the config "
                 f"(agents: {', '.join(sorted(config.profiles)) or 'none'}; '*' means all)"
             )
-        if isinstance(patterns, (str, bytes)) or not all(isinstance(p, str) for p in patterns):
+        if isinstance(patterns, (str, bytes)):
+            raise TypeError(f"limits['{agent}'] must be a list of patterns, not {patterns!r}")
+        patterns = list(patterns)  # once: a generator must not be consumed by the check
+        if not all(isinstance(p, str) for p in patterns):
             raise TypeError(f"limits['{agent}'] must be a list of patterns, not {patterns!r}")
         out[str(agent)] = list(patterns)
     return out

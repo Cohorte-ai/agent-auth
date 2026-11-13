@@ -94,7 +94,11 @@ class A2AEvaluator:
                 continue
             if not fnmatch.fnmatch(to_agent, policy.to_agent):
                 continue
-            if not fnmatch.fnmatch(action, policy.action):
+            # Deny policies match regardless of case (fail closed); allow policies exactly.
+            if policy.effect == "deny":
+                if not fnmatch.fnmatchcase(action.casefold(), policy.action.casefold()):
+                    continue
+            elif not fnmatch.fnmatchcase(action, policy.action):
                 continue
 
             # Evaluate condition

@@ -182,9 +182,16 @@ class ResolvedAgent:
             capabilities=kept,
             denials=denials,
             scopes=scopes,
-            default_tier=child.default_tier,
+            default_tier=_stricter(self.default_tier, child.default_tier),
             chain=[*self.chain, self.agent],
         )
+
+
+_TIERS = {"autonomous": 0, "soft": 1, "strong": 2}
+
+
+def _stricter(a: str, b: str) -> str:
+    return a if _TIERS.get(a, 0) >= _TIERS.get(b, 0) else b
 
 
 UserRoles = Callable[[str], Iterable[str]]
@@ -244,7 +251,7 @@ def resolve(
             for role in sorted(principal.roles):
                 for action in grants.get(role, ()):
                     add(action, f"grant:{role}")
-            for delegation_id, actions in delegations:
+            for delegation_id, actions in delegations if known else ():
                 for action in actions:
                     add(action, f"delegation:{delegation_id}")
             for action in user_permissions:  # deprecated 0.1 union
