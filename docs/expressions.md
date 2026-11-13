@@ -119,6 +119,11 @@ Available context fields depend on where the expression is used:
 
 A2A **deny** policies match the action regardless of case; allow policies match it exactly.
 
+A restriction's condition (approval policies, A2A deny policies) is evaluated twice: as
+written, and with every string folded on both sides (the request's values and the condition's
+literals). It applies if either matches: `action == "deleteUser"` also covers `DELETEUSER`,
+and `resource == "prod"` covers `PROD`.
+
 ---
 
 ## Empty conditions

@@ -745,3 +745,55 @@ def test_middleware_decides_head_as_get(tmp_path: Path) -> None:
     for method in ("GET", "HEAD", "head"):  # HEAD runs the GET handler
         out = asyncio.run(fastapi_auth_middleware(e, Req(method), ok, audience="api"))
         assert out != "ran", method
+
+
+# --- Re-verification of the adapter fixes (2266559) -------------------------------------------
+
+
+def test_an_event_naming_two_actions_is_refused_and_records_nothing(tmp_path: Path) -> None:
+    extra = "separation_of_duties:\n  - {name: pay, actions: [create_payment, approve_payment]}\n"
+    adapter = _adapter(tmp_path, extra)
+    from theaios.guardrails.types import GuardEvent
+
+    two = GuardEvent(
+        scope="tool_call",
+        agent="payer",
+        data={"tool_name": "create_payment", "action": "approve_payment", "resource": "inv-1"},
+    )
+    assert adapter.evaluate(two, user="alice").outcome == "deny"  # type: ignore[attr-defined]
+    same = GuardEvent(
+        scope="tool_call",
+        agent="payer",
+        data={"tool_name": "approve_payment", "action": "approve_payment", "resource": "inv-1"},
+    )
+    # nothing was recorded for the refused event: alice may still approve inv-1
+    assert adapter.evaluate(same, user="alice").outcome == "allow"  # type: ignore[attr-defined]
+
+
+def test_restriction_conditions_ignore_case_on_both_sides(tmp_path: Path) -> None:
+    extra = (
+        "approval_policies:\n"
+        "  - {name: del, condition: 'action == \"deleteUser\"', tier: strong}\n"
+        "a2a:\n  default: allow\n  policies:\n"
+        "    - {name: only-report, from_agent: intern-bot, to_agent: nightly, effect: deny,\n"
+        "       condition: 'action != \"getReport\"'}\n"
+        "    - {name: no-del, from_agent: '*', to_agent: '*', effect: deny,\n"
+        "       condition: 'action == \"deleteUser\"'}\n"
+    )
+    e = _engine(tmp_path, extra)
+    for action in ("deleteUser", "DELETEUSER", "deleteuser"):
+        assert e.explain(_req("", action, agent="intern-bot")).tier == "strong", action
+        d = e.explain(_req("", action, agent="intern-bot", target_agent="researcher"))
+        assert not d.allowed, action
+    # a != against a mixed-case literal does not deny the value it names
+    assert e.explain(_req("", "getReport", agent="intern-bot", target_agent="nightly")).allowed
+    assert not e.explain(_req("", "other", agent="intern-bot", target_agent="nightly")).allowed
+    assert e.explain(_req("", "getReport", agent="intern-bot")).tier == "autonomous"
+
+
+def test_actions_whose_upper_case_folds_differently_are_refused(tmp_path: Path) -> None:
+    e = _engine(tmp_path, limits={"intern-bot": ["drop_index"]})
+    d = e.explain(_req("", "drop_\u0131ndex", agent="intern-bot"))  # dotless i
+    assert not d.allowed and d.provenance == ["action"]
+    assert not e.explain(_req("", "DROP_INDEX", agent="intern-bot")).allowed
+    assert e.explain(_req("", "Stra\u00dfe", agent="intern-bot")).allowed  # ß is fine

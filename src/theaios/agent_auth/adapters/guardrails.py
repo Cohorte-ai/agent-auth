@@ -92,8 +92,8 @@ class GuardrailsAuthAdapter:
 
         The action checked is the tool for a ``tool_call`` event (``data["tool_name"]``),
         ``data["action"]`` when the event carries one, and the event type otherwise. An event
-        carrying both is checked for both. A non-string ``tool_name``, ``action`` or
-        ``resource``, or a ``tool_call`` event without ``tool_name``, is denied.
+        whose ``tool_name`` and ``action`` differ is denied, as are a non-string ``tool_name``,
+        ``action`` or ``resource`` and a ``tool_call`` event without ``tool_name``.
 
         Returns
         -------
@@ -106,7 +106,7 @@ class GuardrailsAuthAdapter:
         def deny(reason: str) -> GuardrailsDecision:
             return Decision(outcome="deny", reason=f"Auth denied: {reason}", severity="high")
 
-        names, problem = _event_actions(event)
+        action, problem = _event_action(event)
         resource = event.data.get("resource", "")
         if not problem and resource is not None and not isinstance(resource, str):
             problem = f"event field 'resource' must be a string, got {type(resource).__name__}"
@@ -114,44 +114,28 @@ class GuardrailsAuthAdapter:
             return deny(problem)
 
         effective_user = user or self._default_user or ""
-        requests = [
+        auth_decision = self._auth_engine.authorize(
             AuthRequest(
                 agent=event.agent,
                 user=effective_user,
                 identity="on_behalf_of" if effective_user else "service",
-                action=name,
+                action=action,
                 resource=resource or "",
                 session_id=session_id or event.session_id,
                 scope=scope or "",
                 target_agent=event.target_agent,
             )
-            for name in names
-        ]
-        # Decide every name before recording any (separation of duties records allowed
-        # actions): a denial is then logged by authorize.
-        for request in requests:
-            if self._auth_engine.explain(request).is_denied:
-                return deny(self._auth_engine.authorize(request).reason)
+        )
+        if auth_decision.is_denied:
+            return deny(auth_decision.reason)
 
-        strictest = None
-        for request in requests:
-            auth_decision = self._auth_engine.authorize(request)
-            if auth_decision.is_denied:
-                return deny(auth_decision.reason)
-            if auth_decision.requires_approval and (
-                strictest is None
-                or _TIERS.get(auth_decision.tier, 0) > _TIERS.get(strictest.tier, 0)
-            ):
-                strictest = auth_decision
-
-        if strictest is not None:
+        if auth_decision.requires_approval:
             return Decision(
                 outcome="require_approval",
-                reason=f"Auth requires {strictest.tier} approval: {strictest.reason}",
-                tier=strictest.tier,
+                reason=f"Auth requires {auth_decision.tier} approval: {auth_decision.reason}",
+                tier=auth_decision.tier,
                 severity="medium",
             )
-
         # Auth passed — run guardrails
         return self._guardrails.evaluate(event)
 
@@ -168,19 +152,20 @@ class GuardrailsAuthAdapter:
         return await asyncio.to_thread(self.evaluate, event, user, session_id, scope)
 
 
-_TIERS = {"autonomous": 0, "soft": 1, "strong": 2}
-
-
-def _event_actions(event: GuardEvent) -> tuple[list[str], str]:
-    """The action names an event asks for, or the reason it is refused."""
-    names: list[str] = []
+def _event_action(event: GuardEvent) -> tuple[str, str]:
+    """The action an event asks for, or the reason it is refused."""
+    names: dict[str, str] = {}
     for key in ("tool_name", "action"):
         if key in event.data:
             value = event.data[key]
             if not isinstance(value, str):
-                return [], f"event field '{key}' must be a string, got {type(value).__name__}"
-            if value not in names:
-                names.append(value)
-    if event.scope == "tool_call" and "tool_name" not in event.data:
-        return [], "a tool_call event must name its tool in data['tool_name']"
-    return names or [event.scope], ""
+                return "", f"event field '{key}' must be a string, got {type(value).__name__}"
+            names[key] = value
+    if event.scope == "tool_call" and "tool_name" not in names:
+        return "", "a tool_call event must name its tool in data['tool_name']"
+    if len(set(names.values())) > 1:
+        return "", (
+            f"the event names the tool {names['tool_name']!r} and the action "
+            f"{names['action']!r}: one action per event"
+        )
+    return next(iter(names.values()), event.scope), ""

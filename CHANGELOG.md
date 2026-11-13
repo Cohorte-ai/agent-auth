@@ -58,10 +58,17 @@ A final red-team pass found the core held (resolution, attenuation, tokens, iden
 
 A re-check of the integration paths confirmed those fixes (token-mode middleware, Flask decorator, guardrails adapter, 150 concurrent separation-of-duties races) and found more, also fixed with tests:
 
-- The guardrails adapter checked a `tool_call` event as the action `tool_call`, never the tool: denials, limits and approval policies on tool names did not apply to tool calls from guardrails' LangChain and OpenAI Agents adapters. It now checks `data["tool_name"]` (and `data["action"]` when present, both when both are), denies a tool call without a tool name and non-string fields. Also in 0.1.x.
+- The guardrails adapter checked a `tool_call` event as the action `tool_call`, never the tool: denials, limits and approval policies on tool names did not apply to tool calls from guardrails' LangChain and OpenAI Agents adapters. It now checks `data["tool_name"]` (or `data["action"]`; an event whose two differ is denied), denies a tool call without a tool name and non-string fields. Also in 0.1.x.
 - The guardrails adapter passed the event type (`input`, `tool_call`...) as the agent-auth scope: an agent with `scopes:` was denied every event, and an event with an empty type skipped scope checks. The scope now comes from the application: `evaluate(event, user, scope=...)`.
 - A sub-agent escaped its parent's approval policy by changing the action's case (`db:DROP`); A2A deny conditions now ignore case like their patterns.
 - The FastAPI middleware decides `HEAD` as `get` (HEAD runs the GET handler, so a denial on `get:/admin*` did not cover it).
+
+A re-verification of those fixes confirmed all five and found more, also fixed with tests:
+
+- An event whose tool name and action differ is denied (one action per event): checking both could leave a separation-of-duties record for an action that was refused.
+- Restriction conditions (approval, A2A deny) are evaluated as written and with every string folded on both sides: a mixed-case literal (`action == "deleteUser"`) missed `DELETEUSER`, and a `!=` against a mixed-case literal denied the value it names.
+- Actions with a character whose upper case folds differently (dotless `ı`: `drop_ındex` escaped a `drop_index` limit, while `upper()` makes it `DROP_INDEX`) are refused.
+- The docs warn that the HTTP middleware does not see WebSocket connections, and that the guardrails adapter decides a sub-agent on its own resolution.
 
 ### Deprecated
 

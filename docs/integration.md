@@ -67,8 +67,8 @@ The adapter:
 
 **Which action is checked.** For a `tool_call` event, the tool: `data["tool_name"]`, as
 guardrails' LangChain and OpenAI Agents adapters send it. For an event with `data["action"]`,
-that action. An event carrying both is checked for both (each must be allowed; the strictest
-approval tier wins). Other events (`input`, `output`) are checked as their type, as in 0.1.
+that action. An event whose `tool_name` and `action` differ is denied (one action per event).
+Other events (`input`, `output`) are checked as their type, as in 0.1.
 A `tool_call` without `tool_name`, or a non-string `tool_name`, `action` or `resource`, is
 denied. Since 0.2 a tool call is checked as its tool: an agent that was allowed `tool_call` in
 0.1 now needs the tools themselves in its profile.
@@ -76,6 +76,10 @@ denied. Since 0.2 a tool call is checked as its tool: an agent that was allowed 
 **Scope.** The event's `scope` is its type (`input`, `tool_call`...), not an agent-auth scope.
 Pass the request's scope yourself: `adapter.evaluate(event, user="alice", scope="project:acme")`.
 Without one, scope checks are skipped, as for any request without a scope.
+
+**Sub-agents.** The adapter decides each event on the agent's own resolution: it does not know
+the chain a sub-agent was delegated through. For sub-agents, call
+`engine.authorize(request, resolved=child)` yourself (see [resolution](resolution.md)).
 
 **What the adapter trusts.** The agent, session and target agent come from the event as your
 code builds it; the tool name, action and resource may come from the model and are checked.
@@ -85,6 +89,10 @@ code builds it; the tool name, action and resource may come from the model and a
 ## HTTP middleware
 
 For web applications and API servers, `agent-auth` can be used as HTTP middleware to gate incoming requests.
+
+!!! warning "HTTP only"
+    `@app.middleware("http")` never sees WebSocket connections. Check WebSocket endpoints
+    yourself (verify the token and call `authorize` in the handler).
 
 !!! warning "Who is calling?"
     The pattern below takes the agent and user from request headers. Anyone who can reach the
