@@ -22,17 +22,23 @@ from theaios.agent_auth.config import load_config as load_auth_config
 from theaios.guardrails.config import load_policy
 from theaios.guardrails.engine import Engine
 
-auth_config = load_auth_config("agent_auth.yaml")
+auth_engine = AuthEngine(load_auth_config("agent_auth.yaml"), user_roles=..., limits=...)
 policy = load_policy("guardrails.yaml")
 
 adapter = GuardrailsAuthAdapter(
-    auth_config=auth_config,
+    auth_config=auth_engine,          # your engine: its limits, roles and state apply
     guardrails_engine=Engine(policy),
 )
 
 # This checks auth first, then evaluates guardrails
 decision = adapter.evaluate(event, user="alice")
+decision = adapter.evaluate(event)    # no user: a service request (the agent's baseline only)
 ```
+
+Pass your application's `AuthEngine`, not just its config: given a config, the adapter builds a
+bare engine of its own, without your code limits, `user_roles` or separation-of-duties state.
+Since 0.2, an event without a user is a service request; 0.1 attributed it to a user called
+`system` (and that account's delegations). Set `default_user=` to name one explicitly.
 
 ### How it works
 
@@ -72,7 +78,10 @@ For web applications and API servers, `agent-auth` can be used as HTTP middlewar
     (0.2): the shipped `fastapi_auth_middleware(engine, request, call_next, audience="...")`
     and `flask_auth_decorator(engine, audience="...")` require `Authorization: Bearer <token>`
     (from `engine.issue_token`), verify it, and decide with the token's resolution, so the
-    caller's identity, sub-agent chain, approval tiers, scopes and separation of duties apply.
+    caller's identity, sub-agent chain, approval tiers and separation of duties apply. The
+    decision's `resource` is the request path (never the caller-controlled host or query);
+    pass `resource=` (a function of the request) to use your business identifier, such as the
+    invoice id. The middleware passes no scope.
     See [Resolution](resolution.md#tokens-for-tool-servers).
 
 ### Installation

@@ -50,6 +50,12 @@ A second re-verification confirmed all of those and found more, also fixed with 
 - Separation of duties holds under concurrency (one lock around check and record) and normalises user names.
 - Actions with control, invisible or look-alike characters are refused; chains are limited to 16 agents; the user's roles are looked up once per resolution, not once per delegation; reasons name the parent agent for inherited denials and grants.
 
+A final red-team pass found the core held (resolution, attenuation, tokens, identity separation) and broke two integration paths, now fixed with tests:
+
+- The token-mode middleware used the full URL (caller-controlled host and query string) as the resource, so resource-based approval policies never fired and separation of duties could be split with `?x=1`: it now uses the request path, or `resource=` supplied by the application.
+- The guardrails adapter built a bare engine from the config (no code limits, no user roles, separate separation-of-duties state) and attributed user-less events to a user called `system` (and that account's delegations): it now accepts the application's `AuthEngine`, and an event without a user is a service request.
+- Approval conditions and A2A deny policies (agents and action) ignore case; request scopes containing wildcards are refused; sessions, delegations and the audit log never share a file when the audit path is custom (they used to overwrite each other).
+
 ### Deprecated
 
 - `user_permissions_provider` union (an agent may do anything its user may do): emits a `FutureWarning` naming the agent, action and user the first time it decides each (agent, action) pair. Use `grants`; set `resolution: {user_permissions: ignore}` to turn it off now. Removed in 1.0.

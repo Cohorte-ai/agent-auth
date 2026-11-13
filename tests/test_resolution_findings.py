@@ -532,3 +532,114 @@ def test_the_middleware_token_mode_ignores_identity_headers(tmp_path: Path) -> N
     finance = {"Authorization": f"Bearer {token}"}
     status = _decide(e, finance, "approve_invoice", "", "mcp://x", "a", "u", "s")
     assert status is not None and status[0] == 403  # bob (sales) has no finance grant
+
+
+# --- Final red team ---------------------------------------------------------------------------------
+
+
+def test_middleware_decides_on_the_path_not_the_url(tmp_path: Path) -> None:
+    from theaios.agent_auth.adapters.middleware import _decide
+
+    extra = (
+        "approval_policies:\n  - {name: prod, condition: 'resource starts_with \"/prod\"', "
+        "tier: strong}\n"
+    )
+    e = _engine(tmp_path, extra)
+    token = e.issue_token(e.resolve("assistant", e.principal("alice")), "api")
+    h = {"Authorization": f"Bearer {token}"}
+    answer = _decide(e, h, "read:report", "/prod/report", "api", "a", "u", "s")
+    assert answer is not None and answer[1]["error"] == "Approval required"
+
+
+def test_middleware_uses_the_request_path_for_fastapi(tmp_path: Path) -> None:
+    import asyncio
+
+    pytest.importorskip("starlette")
+    from theaios.agent_auth.adapters.middleware import fastapi_auth_middleware
+
+    extra = "separation_of_duties:\n  - {name: inv, actions: ['put:*', 'post:*']}\n"
+    path = tmp_path / "agent_auth.yaml"
+    path.write_text(
+        BASE.replace("role: reader\n    access", "role: everything\n    access")
+        + extra
+        + "audit:\n  enabled: false\n"
+    )
+    e = AuthEngine(load_config(str(path)), user_roles=lambda u: ROLES.get(u, []), token_key=KEY)
+    token = e.issue_token(e.resolve("assistant", e.principal("alice")), "api")
+
+    class URL:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        def __str__(self) -> str:
+            return f"http://evil.example{self.path}?x=1"
+
+    class Req:
+        def __init__(self, method: str, path: str) -> None:
+            self.method, self.url = method, URL(path)
+            self.headers = {"Authorization": f"Bearer {token}"}
+
+    async def ok(_req: object) -> str:
+        return "ran"
+
+    put = asyncio.run(fastapi_auth_middleware(e, Req("PUT", "/invoices/42"), ok, audience="api"))
+    post = asyncio.run(fastapi_auth_middleware(e, Req("POST", "/invoices/42"), ok, audience="api"))
+    assert put == "ran" and post != "ran"  # the host and query string cannot split the resource
+
+
+def test_guardrails_adapter_uses_the_apps_engine_and_service_identity(tmp_path: Path) -> None:
+    pytest.importorskip("theaios.guardrails")
+    from theaios.guardrails.engine import Engine
+    from theaios.guardrails.types import GuardEvent, PolicyConfig
+
+    from theaios.agent_auth.adapters.guardrails import GuardrailsAuthAdapter
+
+    e = _engine(tmp_path, limits={"*": ["payments:*"]})
+    adapter = GuardrailsAuthAdapter(e, Engine(PolicyConfig()))
+    ev = GuardEvent(scope="action", agent="intern-bot", data={"action": "payments:send"})
+    assert adapter.evaluate(ev, user="alice").outcome == "deny"  # the code limit applies
+    e.create_delegation("system", "assistant", ["export:all"], 600, "x")
+    ev2 = GuardEvent(scope="action", agent="assistant", data={"action": "export:all"})
+    assert adapter.evaluate(ev2).outcome == "deny"  # no user: service, not "system"
+
+
+def test_approval_conditions_ignore_case(tmp_path: Path) -> None:
+    extra = (
+        "approval_policies:\n  - {name: del, condition: 'action == \"db:delete\"', tier: strong}\n"
+    )
+    e = _engine(tmp_path, extra)
+    for action in ("db:delete", "db:DELETE", "db:Delete"):
+        d = e.authorize(_req("", action, agent="intern-bot"))
+        assert d.tier == "strong", action
+
+
+def test_a2a_deny_ignores_agent_case(tmp_path: Path) -> None:
+    extra = (
+        "a2a:\n  default: allow\n  policies:\n"
+        "    - {name: no-pay, from_agent: '*', to_agent: 'researcher*', effect: deny}\n"
+    )
+    e = _engine(tmp_path, extra)
+    d = e.authorize(_req("", "read:x", agent="intern-bot", target_agent="RESEARCHER"))
+    assert not d.allowed
+
+
+def test_request_scopes_are_values(tmp_path: Path) -> None:
+    extra = "  scoped: {role: reader, scopes: ['project:[!s]*']}\n"
+    path = tmp_path / "agent_auth.yaml"
+    path.write_text(BASE + extra + "audit:\n  enabled: false\n")
+    e = AuthEngine(load_config(str(path)))
+    for scope in ("project:*", "project:[s]ecret"):
+        d = e.authorize(AuthRequest(agent="scoped", user="a", action="read:x", scope=scope))
+        assert not d.allowed and "not a pattern" in d.reason
+
+
+def test_sessions_and_delegations_never_share_the_audit_file(tmp_path: Path) -> None:
+    path = tmp_path / "agent_auth.yaml"
+    path.write_text(BASE + "audit:\n  enabled: true\n  path: logs/agent-audit.log\n")
+    e = AuthEngine(load_config(str(path)), user_roles=lambda u: ROLES.get(u, []))
+    e.authorize(_req("alice", "read:x"))
+    e.create_delegation("alice", "assistant", ["deploy"], 600, "x")
+    e.create_session("assistant", "alice")
+    audit = (tmp_path / "logs" / "agent-audit.log").read_text()
+    assert '"action": "read:x"' in audit or '"action":"read:x"' in audit
+    assert e.authorize(_req("alice", "deploy")).allowed
