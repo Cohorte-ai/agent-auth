@@ -8,6 +8,8 @@ Returns an AuthDecision for every request.
 from __future__ import annotations
 
 import asyncio
+import threading
+import unicodedata
 import dataclasses
 from datetime import datetime
 from dataclasses import dataclass
@@ -142,6 +144,7 @@ class AuthEngine:
             tokens.check_keys(token_key)
         self._token_key = token_key
         self._sod_done: dict[tuple[str, str, str], set[str]] = {}
+        self._sod_lock = threading.Lock()
         self._warned_union: set[tuple[str, str]] = set()
 
     @property
@@ -158,6 +161,9 @@ class AuthEngine:
         the attenuated resolution of a sub-agent (``delegate``), or the one a verified token
         carries (``verify_token``). Approval tiers, scopes and separation of duties still
         apply."""
+        if self._config.separation_of_duties:
+            with self._sod_lock:  # the check and the record must not interleave
+                return self._authorize(request, record=True, given=resolved)
         return self._authorize(request, record=True, given=resolved)
 
     def explain(
@@ -233,12 +239,18 @@ class AuthEngine:
 
         # An action with surrounding spaces could slip past a pattern and then be trimmed by the
         # tool that runs it: refuse it.
-        if not request.action or request.action != request.action.strip():
+        if (
+            not request.action
+            or request.action != request.action.strip()
+            or unicodedata.normalize("NFKC", request.action) != request.action
+            or any(unicodedata.category(ch) in ("Cc", "Cf") for ch in request.action)
+        ):
             return self._done(
                 request,
                 AuthDecision(
                     allowed=False,
-                    reason=f"Invalid action {request.action!r}: empty or surrounded by spaces",
+                    reason=f"Invalid action {request.action!r}: empty, surrounded by spaces, or "
+                    "with control, invisible or look-alike characters",
                     evaluation_time_ms=(time.perf_counter() - start) * 1000,
                     provenance=["action"],
                 ),
@@ -335,9 +347,15 @@ class AuthEngine:
                 record,
             )
         if provenance and not allowed:
-            source = provenance[0].split(":", 1)[0].split("@")[0]
+            head = provenance[0].split(":", 1)[0]
+            source, _, owner = head.partition("@")
             if source == "limit":
                 reason = f"Action '{request.action}' is blocked by a limit set in code"
+            elif owner:
+                reason = (
+                    f"Action '{request.action}' denied by profile '{owner}', which delegated "
+                    f"to '{request.agent}'"
+                )
             else:
                 name = profile.name if profile else request.agent
                 reason = f"Action '{request.action}' denied by profile '{name}'"
@@ -376,7 +394,9 @@ class AuthEngine:
         # Steps 4-6: baseline, grants, the user's delegations and the deprecated
         # user-permissions union are all in the resolution.
         action_allowed = allowed
-        if action_allowed and {x.split(":", 1)[0] for x in provenance} == {"user_permissions"}:
+        if action_allowed and {x.split(":", 1)[0].split("@")[0] for x in provenance} == {
+            "user_permissions"
+        }:
             self._warn_union(request)
         delegation_id = next(
             (x.split(":")[1] for x in provenance if x.startswith("delegation:")), None
@@ -448,7 +468,12 @@ class AuthEngine:
             decision = AuthDecision(
                 allowed=False,
                 reason=f"Action '{request.action}' not authorized for agent "
-                f"'{request.agent}'{self._grant_hint(request, principal)}",
+                f"'{request.agent}'"
+                + (
+                    f" within what '{resolved.chain[-1]}' delegated to it"
+                    if resolved.chain
+                    else self._grant_hint(request, principal)
+                ),
                 evaluation_time_ms=(time.perf_counter() - start) * 1000,
             )
             return self._done(request, decision, record)
@@ -464,6 +489,14 @@ class AuthEngine:
         tier, approval_policy, eval_error = self._approval.explain(
             request.action, eval_context, default_tier
         )
+        # A sub-agent inherits every approval its chain would need: evaluate the policies as
+        # each agent of the chain and keep the strictest tier.
+        for ancestor in resolved.chain:
+            t2, p2, e2 = self._approval.explain(
+                request.action, {**eval_context, "agent": ancestor}, default_tier
+            )
+            if _TIER_ORDER.get(t2, 0) > _TIER_ORDER.get(tier, 0):
+                tier, approval_policy, eval_error = t2, f"{p2}@{ancestor}" if p2 else "", e2
 
         requires_approval = tier in ("soft", "strong")
         if not requires_approval:
@@ -475,7 +508,10 @@ class AuthEngine:
             reason = f"Allowed by profile '{profile.name}'"
         elif any(x.startswith("grant:") for x in provenance):
             role = next(x for x in provenance if x.startswith("grant:")).split(":")[1]
-            reason = f"Allowed by the '{role}' grant on '{request.agent}'"
+            role, _, owner = role.partition("@")
+            reason = f"Allowed by the '{role}' grant on '{owner or request.agent}'" + (
+                f", delegated to '{request.agent}'" if owner else ""
+            )
         elif delegation_grant is not None:
             reason = f"Delegated by user '{delegation_grant.from_user}'"
         elif profile and "user_permissions" not in sources:
@@ -535,7 +571,8 @@ class AuthEngine:
             delegations = [
                 (g.delegation_id, list(g.actions))
                 for g in self._delegations.list_active(agent=agent)
-                if g.from_user == principal.user and self._delegation_still_valid(g)
+                if g.from_user == principal.user
+                and self._delegation_still_valid(g, principal.roles)
             ]
             if self._user_provider is not None and (
                 self._config.resolution.user_permissions == "union"
@@ -557,7 +594,9 @@ class AuthEngine:
             known=agent in self._config.profiles,
         )
 
-    def _delegation_still_valid(self, grant: DelegationGrant) -> bool:
+    def _delegation_still_valid(
+        self, grant: DelegationGrant, roles: frozenset[str] | None = None
+    ) -> bool:
         """A delegation applies only while delegation is enabled and the *current* rules would
         still accept it: disabling delegation or tightening a rule takes effect at once."""
         try:
@@ -566,12 +605,13 @@ class AuthEngine:
             duration = int((expires - granted).total_seconds())
         except (TypeError, ValueError):
             return False
-        try:
-            roles = self._principal(
-                AuthRequest(agent=grant.to_agent, user=grant.from_user, action="")
-            ).roles
-        except Exception:  # noqa: BLE001 - unknown roles: rules that need roles cannot pass
-            roles = frozenset()
+        if roles is None:
+            try:
+                roles = self._principal(
+                    AuthRequest(agent=grant.to_agent, user=grant.from_user, action="")
+                ).roles
+            except Exception:  # noqa: BLE001 - unknown roles: rules that need roles cannot pass
+                roles = frozenset()
         return not self._delegations.validate_rule(
             list(grant.actions), duration, grant.reason, sorted(roles)
         )
@@ -621,12 +661,19 @@ class AuthEngine:
     def _rederive(self, agents: list[str], principal: Principal) -> ResolvedAgent:
         """Resolve a delegation chain from scratch: the first agent, attenuated by each next,
         with the A2A reach of each hop."""
+        if len(agents) > MAX_CHAIN:
+            raise tokens.TokenError(f"delegation chains are limited to {MAX_CHAIN} agents")
         current = self.resolve(agents[0], principal)
         for agent in agents[1:]:
-            current = self.delegate(current, agent)
+            current = self._delegate(current, agent)
         return current
 
     def delegate(self, parent: ResolvedAgent, child_agent: str) -> ResolvedAgent:
+        if len(parent.chain) + 1 >= MAX_CHAIN:
+            raise ValueError(f"delegation chains are limited to {MAX_CHAIN} agents")
+        return self._delegate(parent, child_agent)
+
+    def _delegate(self, parent: ResolvedAgent, child_agent: str) -> ResolvedAgent:
         """What ``child_agent`` may do when ``parent`` hands it work: the intersection of the
         child's own resolution and the parent's, for the same principal."""
         child = parent.attenuate(self.resolve(child_agent, parent.principal))
@@ -666,7 +713,7 @@ class AuthEngine:
     def _sod_key(request: AuthRequest, rule: str) -> tuple[str, str, str]:
         # Case and surrounding spaces do not make a different resource; a missing resource is
         # one shared resource (over-restrictive rather than skipped).
-        return (rule, request.user, request.resource.strip().casefold())
+        return (rule, request.user.strip().casefold(), request.resource.strip().casefold())
 
     def _sod_conflict(self, request: AuthRequest) -> str | None:
         action = request.action.casefold()
@@ -710,9 +757,11 @@ class AuthEngine:
             self._log(request, decision)
         return decision
 
-    async def authorize_async(self, request: AuthRequest) -> AuthDecision:
+    async def authorize_async(
+        self, request: AuthRequest, *, resolved: ResolvedAgent | None = None
+    ) -> AuthDecision:
         """Async version of authorize. Same logic, awaitable for framework adapters."""
-        return await asyncio.to_thread(self.authorize, request)
+        return await asyncio.to_thread(self.authorize, request, resolved=resolved)
 
     def create_session(
         self,
@@ -766,6 +815,10 @@ class AuthEngine:
         """Write an audit log entry if auditing is enabled."""
         if self._audit is not None:
             self._audit.write(request, decision, self._config)
+
+
+_TIER_ORDER = {"autonomous": 0, "soft": 1, "strong": 2}
+MAX_CHAIN = 16
 
 
 def _check_limits(
