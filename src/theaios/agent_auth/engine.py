@@ -119,18 +119,11 @@ class AuthEngine:
         self._a2a = A2AEvaluator(config.a2a, config.variables)
 
         # Session manager
-        self._sessions = SessionManager(
-            path=str(config.audit.path).replace("audit.jsonl", "sessions.jsonl")
-            if config.audit.path != ".agent_auth/audit.jsonl"
-            else ".agent_auth/sessions.jsonl"
-        )
+        self._sessions = SessionManager(path=_sibling(config.audit.path, "sessions"))
 
         # Delegation manager
         self._delegations = DelegationManager(
-            config=config.delegation,
-            path=str(config.audit.path).replace("audit.jsonl", "delegations.jsonl")
-            if config.audit.path != ".agent_auth/audit.jsonl"
-            else ".agent_auth/delegations.jsonl",
+            config=config.delegation, path=_sibling(config.audit.path, "delegations")
         )
 
         # Audit log
@@ -222,9 +215,11 @@ class AuthEngine:
             # A session bound to a scope binds its requests: a request without a scope takes
             # the session's; a request for another scope is refused.
             if session.scope:
-                if not request.scope:
+                # Inherit only a literal scope: a pattern ("project:*") is not a value, and a
+                # request without a scope keeps 0.1 behaviour (no scope check).
+                if not request.scope and not any(ch in "*?[" for ch in session.scope):
                     request = dataclasses.replace(request, scope=session.scope)
-                elif not fnmatch.fnmatchcase(request.scope, session.scope):
+                if request.scope and not fnmatch.fnmatchcase(request.scope, session.scope):
                     return self._done(
                         request,
                         AuthDecision(
@@ -253,6 +248,21 @@ class AuthEngine:
                     "with control, invisible or look-alike characters",
                     evaluation_time_ms=(time.perf_counter() - start) * 1000,
                     provenance=["action"],
+                ),
+                record,
+            )
+
+        # Scopes are literal values: a request scope with wildcards would match profile patterns
+        # as text ("project:*" against "project:[!s]*").
+        if any(ch in "*?[" for ch in request.scope):
+            return self._done(
+                request,
+                AuthDecision(
+                    allowed=False,
+                    reason=f"Invalid scope {request.scope!r}: a request scope is a value, not a "
+                    "pattern",
+                    evaluation_time_ms=(time.perf_counter() - start) * 1000,
+                    provenance=["scope"],
                 ),
                 record,
             )
@@ -489,6 +499,13 @@ class AuthEngine:
         tier, approval_policy, eval_error = self._approval.explain(
             request.action, eval_context, default_tier
         )
+        # Restrictions ignore case: an approval written for "db:delete" also covers
+        # "db:DELETE" (evaluated on the lower-case action too; the stricter tier wins).
+        if request.action.casefold() != request.action:
+            lowered = {**eval_context, "action": request.action.casefold()}
+            t2, p2, e2 = self._approval.explain(request.action.casefold(), lowered, default_tier)
+            if _TIER_ORDER.get(t2, 0) > _TIER_ORDER.get(tier, 0):
+                tier, approval_policy, eval_error = t2, p2, e2
         # A sub-agent inherits every approval its chain would need: evaluate the policies as
         # each agent of the chain and keep the strictest tier.
         for ancestor in resolved.chain:
@@ -815,6 +832,14 @@ class AuthEngine:
         """Write an audit log entry if auditing is enabled."""
         if self._audit is not None:
             self._audit.write(request, decision, self._config)
+
+
+def _sibling(audit_path: str, kind: str) -> str:
+    """Where sessions or delegations live next to the audit log. Never the audit file itself:
+    a path without "audit.jsonl" used to make all three share one file."""
+    if "audit.jsonl" in audit_path:
+        return audit_path.replace("audit.jsonl", f"{kind}.jsonl")
+    return f"{audit_path}.{kind}.jsonl"
 
 
 _TIER_ORDER = {"autonomous": 0, "soft": 1, "strong": 2}

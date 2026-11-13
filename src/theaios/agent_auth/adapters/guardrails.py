@@ -45,21 +45,26 @@ class GuardrailsAuthAdapter:
 
     Parameters
     ----------
-    auth_config : AuthConfig
-        Parsed agent-auth configuration.
+    auth_config : AuthEngine or AuthConfig
+        Your application's ``AuthEngine`` (recommended: its code limits, ``user_roles``,
+        separation-of-duties state and delegations apply), or a parsed config, for which a
+        bare engine is built (no limits, no user roles).
     guardrails_engine : Engine
         An initialized guardrails Engine instance.
-    default_user : str
-        Default user name if not provided per-call.
+    default_user : str, optional
+        User for events that name none. Default ``None``: such events are service requests
+        (the agent's baseline only), never attributed to an account.
     """
 
     def __init__(
         self,
-        auth_config: AuthConfig,
+        auth_config: AuthConfig | AuthEngine,
         guardrails_engine: GuardrailsEngine,
-        default_user: str = "system",
+        default_user: str | None = None,
     ) -> None:
-        self._auth_engine = AuthEngine(auth_config)
+        self._auth_engine = (
+            auth_config if isinstance(auth_config, AuthEngine) else AuthEngine(auth_config)
+        )
         self._guardrails = guardrails_engine
         self._default_user = default_user
 
@@ -88,7 +93,7 @@ class GuardrailsAuthAdapter:
         """
         from theaios.guardrails.types import Decision
 
-        effective_user = user or self._default_user
+        effective_user = user or self._default_user or ""
 
         # Determine action from event
         action = event.data.get("action", event.scope)
@@ -101,6 +106,7 @@ class GuardrailsAuthAdapter:
         auth_request = AuthRequest(
             agent=event.agent,
             user=effective_user,
+            identity="on_behalf_of" if effective_user else "service",
             action=action_str,
             resource=str(event.data.get("resource", "")),
             session_id=session_id or event.session_id,

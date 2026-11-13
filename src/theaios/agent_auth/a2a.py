@@ -90,15 +90,20 @@ class A2AEvaluator:
 
         for policy, ast in self._policies:
             # Check agent patterns
-            if not fnmatch.fnmatch(from_agent, policy.from_agent):
-                continue
-            if not fnmatch.fnmatch(to_agent, policy.to_agent):
-                continue
-            # Deny policies match regardless of case (fail closed); allow policies exactly.
+            # Deny policies match agents and action regardless of case (fail closed); allow
+            # policies match them exactly.
             if policy.effect == "deny":
-                if not fnmatch.fnmatchcase(action.casefold(), policy.action.casefold()):
+                if not (
+                    fnmatch.fnmatchcase(from_agent.casefold(), policy.from_agent.casefold())
+                    and fnmatch.fnmatchcase(to_agent.casefold(), policy.to_agent.casefold())
+                    and fnmatch.fnmatchcase(action.casefold(), policy.action.casefold())
+                ):
                     continue
-            elif not fnmatch.fnmatchcase(action, policy.action):
+            elif not (
+                fnmatch.fnmatchcase(from_agent, policy.from_agent)
+                and fnmatch.fnmatchcase(to_agent, policy.to_agent)
+                and fnmatch.fnmatchcase(action, policy.action)
+            ):
                 continue
 
             # Evaluate condition

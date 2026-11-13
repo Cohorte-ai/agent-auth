@@ -13,6 +13,11 @@ Two modes:
   ``X-User-Name``. **Anyone who can reach the service can claim any agent and any user**: use
   this mode only behind a gateway that authenticates the caller and sets those headers itself.
 
+The ``resource`` of each decision is the request **path** (never the host or the query string,
+which the caller controls). Pass ``resource=`` (a function of the request) to use your own
+resource identifier, for example the invoice id, so that approval policies and separation of
+duties see the business object rather than a route.
+
 FastAPI example::
 
     from fastapi import FastAPI, Request, HTTPException
@@ -120,6 +125,7 @@ async def fastapi_auth_middleware(
     request: Any,
     call_next: Callable[..., Any],
     audience: str | None = None,
+    resource: Callable[[Any], str] | None = None,
 ) -> Any:
     """FastAPI middleware that checks agent-auth before processing requests.
 
@@ -161,7 +167,7 @@ async def fastapi_auth_middleware(
         engine,
         request.headers,
         action,
-        str(request.url),
+        resource(request) if resource else request.url.path,
         audience,
         "X-Agent-Name",
         "X-User-Name",
@@ -180,6 +186,7 @@ def flask_auth_decorator(
     user_header: str = "X-User-Name",
     session_header: str = "X-Session-Id",
     audience: str | None = None,
+    resource: Callable[[Any], str] | None = None,
 ) -> Callable[..., Callable[..., Any]]:
     """Create a Flask decorator factory for agent-auth checks.
 
@@ -217,7 +224,7 @@ def flask_auth_decorator(
                     engine,
                     request.headers,
                     action,
-                    request.url,
+                    resource(request) if resource else request.path,
                     audience,
                     agent_header,
                     user_header,
