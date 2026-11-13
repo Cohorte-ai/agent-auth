@@ -796,7 +796,7 @@ def test_actions_whose_upper_case_folds_differently_are_refused(tmp_path: Path) 
     d = e.explain(_req("", "drop_\u0131ndex", agent="intern-bot"))  # dotless i
     assert not d.allowed and d.provenance == ["action"]
     assert not e.explain(_req("", "DROP_INDEX", agent="intern-bot")).allowed
-    assert e.explain(_req("", "Stra\u00dfe", agent="intern-bot")).allowed  # ß is fine
+    assert e.explain(_req("", "caf\u00e9", agent="intern-bot")).allowed  # é is case-stable
 
 
 # --- Re-verification at 14eecf6 ------------------------------------------------------------
@@ -838,7 +838,8 @@ def test_deny_patterns_with_single_character_wildcards_and_classes(tmp_path: Pat
         for action in ("db:drop_\u00df", "db:drop_\u0130", "cfg:ADMIN", "db:drop_x"):
             assert not e.explain(_req("", action, agent=agent)).allowed, (agent, action)
         assert e.explain(_req("", "cfg:admin", agent=agent)).allowed
-    assert e.authorize(_req("alice", "pay_\u00df", agent="intern-bot", resource="r")).allowed
+    assert not e.authorize(_req("alice", "pay_\u00df", agent="intern-bot", resource="r")).allowed
+    assert e.authorize(_req("alice", "PAY_X", agent="intern-bot", resource="r")).allowed
     assert not e.authorize(_req("alice", "approve", agent="intern-bot", resource="r")).allowed
 
 
@@ -908,7 +909,7 @@ def test_a_denied_mixed_case_action_escapes_nothing(tmp_path: Path) -> None:
     e = _engine(tmp_path, extra, limits={"intern-bot": ["db:drop_?"]})
     for action in ("DB:DROP_ß", "Db:Drop_ß", "DB:DROP_İ"):
         assert not e.explain(_req("", action, agent="intern-bot")).allowed, action
-    assert e.authorize(_req("alice", "PAY_ß", agent="intern-bot", resource="r")).allowed
+    assert e.authorize(_req("alice", "PAY_X", agent="intern-bot", resource="r")).allowed
     assert not e.authorize(_req("alice", "approve", agent="intern-bot", resource="r")).allowed
 
 
@@ -967,3 +968,23 @@ def test_a_long_chain_inside_a_comparison_is_decided(tmp_path: Path) -> None:
     e = _engine(tmp_path, f"approval_policies:\n  - {{name: c, condition: '{cond}', tier: soft}}\n")
     assert e.explain(_req("", "read", agent="intern-bot", metadata={"x": 2})).tier == "autonomous"
     assert e.explain(_req("", "PAY", agent="intern-bot", metadata={"x": 2})).tier == "soft"
+
+
+# --- Re-verification at d233545 ------------------------------------------------------------
+
+
+def test_case_unstable_names_are_refused(tmp_path: Path) -> None:
+    e = _engine(tmp_path, limits={"intern-bot": ["db:drop_ss?"]})
+    for action in ("db:drop_\u00df\u00df", "db:drop_\u00df\u1e9e", "DB:DROP_\u0130", "x\u01f0"):
+        d = e.explain(_req("", action, agent="intern-bot"))
+        assert not d.allowed and d.provenance == ["action"], action
+    assert e.explain(_req("", "db:drop_x\u00e9", agent="intern-bot")).allowed  # é is stable
+    extra = (
+        "a2a:\n  default: allow\n  policies:\n"
+        "    - {name: no-deploy, from_agent: '*', to_agent: researcher, effect: deny}\n"
+    )
+    e = _engine(tmp_path, extra)
+    for target in ("researcher ", "research\u200ber", "RESEARCHER"):
+        assert not e.explain(_req("", "read:x", agent="intern-bot", target_agent=target)).allowed
+    assert e.explain(_req("", "read:x", agent="intern-bot", target_agent="nightly")).allowed
+    assert e.explain(_req("", "read:x", agent="intern-bot", target_agent="")).allowed  # no target

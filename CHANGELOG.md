@@ -84,6 +84,8 @@ A last re-verification confirmed those against a brute-force reference (80,000 r
 
 A final round found the same gap with two special characters together (`DB:DROP_ßİ` escaped `db:drop_??`). Deny patterns also match character by character ignoring case (`re.IGNORECASE`), which closes the class (no inconsistency in 300,000 random combinations of every cased character) and makes `İ` an `i` (`DB:DROP_İNDEX` is a `db:drop_index`). Long chains inside a single comparison no longer exhaust the recursion limit.
 
+The last round found nothing exploitable. Its remaining notes are closed too: actions with a case-unstable character (one that case mapping splits or merges, such as `ß`, `ẞ`, `İ`; about 88 characters) are refused, since a `?` in a pattern counts characters and two spellings of the same action could get different verdicts; a target agent name is validated like an action (surrounding spaces, invisible characters); the compiled-pattern cache is no longer capped at 1,024 patterns.
+
 ### Deprecated
 
 - `user_permissions_provider` union (an agent may do anything its user may do): emits a `FutureWarning` naming the agent, action and user the first time it decides each (agent, action) pair. Use `grants`; set `resolution: {user_permissions: ignore}` to turn it off now. Removed in 1.0.

@@ -233,25 +233,23 @@ class AuthEngine:
                         record,
                     )
 
-        # An action with surrounding spaces could slip past a pattern and then be trimmed by the
-        # tool that runs it: refuse it.
-        if (
-            not request.action
-            or request.action != request.action.strip()
-            or unicodedata.normalize("NFKC", request.action) != request.action
-            # A character whose upper case folds differently (dotless ı: "drop_ındex" is not
-            # a "drop_index" to casefold, but upper() turns it into DROP_INDEX).
-            or request.action.upper().casefold() != request.action.casefold()
-            or any(unicodedata.category(ch) in ("Cc", "Cf") for ch in request.action)
-        ):
+        # Names a pattern is matched against must mean one thing: refuse what a tool could
+        # trim, normalise or re-case into something a pattern did not see.
+        bad = [
+            (what, name)
+            for what, name in (("action", request.action), ("target agent", request.target_agent))
+            if (what == "action" or name) and not _plain_name(name or "")  # no target: fine
+        ]
+        if bad:
+            what, name = bad[0]
             return self._done(
                 request,
                 AuthDecision(
                     allowed=False,
-                    reason=f"Invalid action {request.action!r}: empty, surrounded by spaces, or "
-                    "with control, invisible or look-alike characters",
+                    reason=f"Invalid {what} {name!r}: empty, surrounded by spaces, or "
+                    "with control, invisible, look-alike or case-unstable characters",
                     evaluation_time_ms=(time.perf_counter() - start) * 1000,
-                    provenance=["action"],
+                    provenance=["action" if what == "action" else "target_agent"],
                 ),
                 record,
             )
@@ -838,6 +836,21 @@ def _sibling(audit_path: str, kind: str) -> str:
     if "audit.jsonl" in audit_path:
         return audit_path.replace("audit.jsonl", f"{kind}.jsonl")
     return f"{audit_path}.{kind}.jsonl"
+
+
+def _plain_name(name: str) -> bool:
+    """A name patterns can be matched against: not empty, no surrounding spaces, NFKC-stable,
+    no control or format characters, and the same length and fold under every case mapping
+    (refuses dotless ı, ß, İ and the like: "drop_ındex" upper-cases to DROP_INDEX, and a
+    "?" in a pattern counts characters that case mapping splits or merges)."""
+    return (
+        bool(name)
+        and name == name.strip()
+        and unicodedata.normalize("NFKC", name) == name
+        and not any(unicodedata.category(ch) in ("Cc", "Cf") for ch in name)
+        and name.upper().casefold() == name.casefold()
+        and len(name.casefold()) == len(name.upper()) == len(name.lower()) == len(name)
+    )
 
 
 _TIER_ORDER = {"autonomous": 0, "soft": 1, "strong": 2}

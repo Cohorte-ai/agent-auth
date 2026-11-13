@@ -98,9 +98,10 @@ written, case-folded, lower-cased, upper-cased or character by character ignorin
 `İ` counts as `i`). Avoid negated classes (`[!a-z]`) in deny
 patterns: what they exclude depends on case. Capabilities, grants, delegations, scopes and allow policies match exactly. Use one
 spelling for your actions. An action that is empty or surrounded by spaces, or containing
-control, invisible or look-alike (non-NFKC) characters, or a character whose upper case folds
-to something else (only the dotless `ı`, so Turkish action names such as `kullanıcı_sil` are
-refused: use ASCII action names), is refused. A request scope is a value, never a pattern: a scope containing `*`, `?` or `[` is
+control, invisible or look-alike (non-NFKC) characters, or a case-unstable character (one that
+case mapping splits, merges or re-folds: `ß`, `ẞ`, `İ`, the dotless `ı` and about 85 others),
+is refused, and so is a target agent name with the same problems. Use ASCII action names:
+`straße_lesen` or `kullanıcı_sil` are refused, accents such as `é` are fine. A request scope is a value, never a pattern: a scope containing `*`, `?` or `[` is
 refused, and a session whose scope is a pattern does not hand it to requests without one.
 
 ---

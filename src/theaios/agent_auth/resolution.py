@@ -60,7 +60,7 @@ def denial_matches(action: str, pattern: str) -> bool:
     ) or bool(_ignorecase(pattern).fullmatch(action))
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=None)  # patterns come from the config: a bounded set
 def _ignorecase(pattern: str) -> re.Pattern[str]:
     return re.compile(fnmatch.translate(pattern), re.IGNORECASE)
 
