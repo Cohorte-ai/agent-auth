@@ -95,6 +95,13 @@ The last round found nothing exploitable. Its remaining notes are closed too: ac
 
 Every 0.1 config loads and decides as before (all 0.1 tests pass unchanged); new keys are optional. Two adapter changes can deny what 0.1 allowed: the guardrails adapter checks tool calls as their tool (an agent allowed `tool_call` needs the tools), and the FastAPI middleware checks `HEAD` as `get`.
 
+## [0.1.5] - 2026-11-13
+
+### Security
+
+- The guardrails adapter checked a `tool_call` event as the action `tool_call`, never the tool: a profile's `deny` (and approval policies) on tool names did not apply to tool calls from guardrails' LangChain and OpenAI Agents adapters. It now checks `data["tool_name"]`, or `data["action"]` (an event whose two differ is denied). A `tool_call` without a tool name, and a non-string `tool_name`, `action` or `resource`, are denied (they were converted with `str()`). An agent allowed `tool_call` now needs the tools themselves in its profile.
+- The FastAPI middleware decides `HEAD` as `get` (HEAD runs the GET handler, so a denial on `get:/admin*` did not cover it).
+
 ## [0.1.4] - 2026-11-11
 
 ### Security
