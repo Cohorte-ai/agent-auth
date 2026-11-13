@@ -234,6 +234,7 @@ def sessions(
 
 @main.command()
 @click.option("--from-user", required=True, help="User granting delegation")
+@click.option("--roles", default="", help="The user's roles, comma-separated (for role rules)")
 @click.option("--to-agent", required=True, help="Agent receiving delegation")
 @click.option("--actions", required=True, help="Comma-separated actions to delegate")
 @click.option("--duration", "-d", type=int, default=None, help="Duration in seconds")
@@ -242,6 +243,7 @@ def sessions(
 def delegate(
     ctx: click.Context,
     from_user: str,
+    roles: str,
     to_agent: str,
     actions: str,
     duration: int | None,
@@ -255,7 +257,7 @@ def delegate(
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    engine = AuthEngine(config)
+    engine = AuthEngine(config, user_roles=_roles_option(roles))
     action_list = [a.strip() for a in actions.split(",")]
 
     try:

@@ -21,9 +21,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI: `agent-auth preview`; `check --roles`, `check --service`, and the provenance of each decision.
 - Docs: [Resolution](docs/resolution.md); design notes in `docs/design/resolution.md`.
 
+### Changed (from the pre-release test, before 0.2.0 shipped)
+
+Three testers (a newcomer, a red team, a platform engineer) tested the first 0.2 build. Fixed, each with a regression test (`tests/test_resolution_findings.py`):
+
+- **Delegations**: rules can say who may delegate (`roles:`), checked with the delegating user's current roles at every use; disabling delegation or tightening a rule stops existing delegations; delegation rules and sub-agent attenuation no longer read wildcards as text (`read:[!s]*` no longer accepts `read:*`); no delegation to an agent without a profile. Also in 0.1.x: any user could delegate any action.
+- **A2A** conditions see the request's `user`, `resource`, `scope` (they saw only caller metadata: a deny on `/prod` never fired, and `metadata.user` could impersonate). Sub-agent hand-offs (`delegate`) need an A2A allow.
+- **Tool servers**: `authorize(request, resolved=...)` decides against a token's or sub-agent's resolution with approval tiers, scopes and separation of duties; the docs no longer recommend `ResolvedAgent.check` for that.
+- **Access** entries: roles by name, users as `user:<name>`, `service` as a keyword (a user named `finance` or `service` matched them).
+- **Matching**: denials and limits ignore case; separation of duties normalises actions and resources and treats a missing resource as one shared resource.
+- **Limits** are validated when the engine is built (a string or a misspelled agent silently disabled them).
+- **Tokens**: canonical encoding only; refused if issued in the future or living over an hour; `leeway` at most 300 s; key rotation (`token_key=[new, old]`); str keys and short keys refused at construction; clearer mismatch errors.
+- **Sessions**: a session's scope binds its requests. Delegation and session files are reloaded when another process changes them.
+- **Identity provider**: a `user_roles` that fails or returns a non-collection denies the request. `principal(user, service=True)` and CLI `--service --user` are refused.
+- **Config**: duplicate YAML keys are refused; precise errors for grant values and separation-of-duties actions.
+- Unknown agents have no access (except through the deprecated union, for compatibility); `preview` shows union actions; the audit log is private (0600) and records identity and provenance.
+
 ### Deprecated
 
-- `user_permissions_provider` union (an agent may do anything its user may do): emits a `DeprecationWarning` when it decides something. Use `grants`; set `resolution: {user_permissions: ignore}` to turn it off now. Removed in 1.0.
+- `user_permissions_provider` union (an agent may do anything its user may do): emits a `FutureWarning` naming the agent, action and user when it decides something. Use `grants`; set `resolution: {user_permissions: ignore}` to turn it off now. Removed in 1.0.
 - Approval tiers keep working; new code should prefer theaios-guardrails flow control proposals.
 
 ### Compatibility

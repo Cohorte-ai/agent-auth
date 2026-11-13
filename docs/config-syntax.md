@@ -38,7 +38,15 @@ sessions:                       # Optional. Session configuration.
 
 audit:                          # Optional. Audit logging configuration.
   ...
+
+separation_of_duties:           # Optional (0.2). Actions one user may not combine.
+  ...
+
+resolution:                     # Optional (0.2). How permissions are resolved.
+  ...
 ```
+
+A key written twice anywhere in the file is an error (YAML would silently keep the last one).
 
 ---
 
@@ -117,7 +125,7 @@ Each agent profile is a named entry under `profiles:`.
 | `max_session_duration` | `int` | No | Max session duration in seconds. Default: `3600` |
 | `default_tier` | `string` | No | Default approval tier. Default: `"autonomous"` |
 | `description` | `string` | No | Human-readable description |
-| `access` | `list[string]` | No | Who may use the agent: user roles, user names, or `service`. Empty = everyone. (0.2) |
+| `access` | `list[string]` | No | Who may use the agent: role names, `user:<name>` for a user, `service` for service requests. Empty = everyone. (0.2) |
 | `grants` | `map[string, list[string]]` | No | What the agent may additionally do for a user holding a role (`{finance: [approve_invoice]}`). Keys are the user's roles from `user_roles`, not the `roles:` section. (0.2) |
 
 ```yaml

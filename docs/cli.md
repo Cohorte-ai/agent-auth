@@ -59,7 +59,7 @@ Evaluate an authorization request and print the decision.
 ```bash
 agent-auth -c agent_auth.yaml check \
     --agent <AGENT> \
-    --user <USER> \
+    (--user <USER> [--roles <ROLE,ROLE>] | --service) \
     --action <ACTION> \
     [--resource <RESOURCE>] \
     [--scope <SCOPE>] \
@@ -72,7 +72,9 @@ agent-auth -c agent_auth.yaml check \
 | Option | Required | Description |
 |---|---|---|
 | `--agent`, `-a` | Yes | Agent name |
-| `--user`, `-u` | Yes | User name |
+| `--user`, `-u` | One of `--user`/`--service` | User the agent acts for |
+| `--roles` | No | The user's roles, comma-separated (the CLI has no identity provider) |
+| `--service` | One of `--user`/`--service` | The agent acts as a service, for no one |
 | `--action` | Yes | Action to check |
 | `--resource`, `-r` | No | Resource path |
 | `--scope`, `-s` | No | Scope |
@@ -97,8 +99,27 @@ agent-auth -c agent_auth.yaml check --agent assistant --user alice --action read
 
 ### Exit codes
 
-- `0`: allowed
-- `1`: denied
+- `0`: allowed (including "allowed, requires approval": read `requires_approval` in `-o json`)
+- `1`: denied, or the config is invalid
+- `2`: wrong options (for example `--service` with `--user`)
+
+The console output shows the decision's provenance ("Because: grant:finance:approve_invoice").
+Limits set in code (`AuthEngine(limits=...)`) are not applied by the CLI; your application may
+deny more.
+
+---
+
+## `preview`
+
+Everything an agent may do for a user (or as a service), with where each permission comes from.
+
+```bash
+agent-auth -c agent_auth.yaml preview --agent assistant --user alice --roles finance
+agent-auth -c agent_auth.yaml preview --agent nightly-report --service -o json
+```
+
+Exit `0` (even when the principal has no access: read `access` in `-o json`), `1` for an
+unknown agent or an invalid config, `2` for wrong options.
 
 ---
 
@@ -148,6 +169,7 @@ agent-auth -c agent_auth.yaml delegate \
 | Option | Required | Description |
 |---|---|---|
 | `--from-user` | Yes | User granting the delegation |
+| `--roles` | No | The user's roles, comma-separated, for delegation rules with `roles:` |
 | `--to-agent` | Yes | Agent receiving the permissions |
 | `--actions` | Yes | Comma-separated list of actions |
 | `--duration`, `-d` | No | Duration in seconds |

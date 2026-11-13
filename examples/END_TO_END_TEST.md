@@ -134,7 +134,7 @@ Expected: table showing the session from step 13.
 ## Step 15: Create a delegation
 
 ```bash
-agent-auth -c agent_auth.yaml delegate --from-user alice --to-agent copilot --actions read,write --duration 3600 --reason "Sprint review"
+agent-auth -c agent_auth.yaml delegate --from-user alice --roles editor --to-agent copilot --actions read,write --duration 3600 --reason "Sprint review"
 ```
 
 Expected: prints delegation ID and details.

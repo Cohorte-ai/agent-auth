@@ -123,6 +123,7 @@ delegation:
   max_duration: 86400       # 24 hours
   rules:
     - name: admin-delegation
+      roles: [admin]          # the delegating user's roles (from user_roles / --roles)
       allowed_actions:
         - read
         - write
@@ -131,6 +132,7 @@ delegation:
       description: Admins can delegate for up to 24 hours
 
     - name: editor-delegation
+      roles: [editor]
       allowed_actions:
         - read
         - write

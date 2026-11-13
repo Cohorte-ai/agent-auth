@@ -68,9 +68,11 @@ delegation:
   max_duration: 86400         # 24 hours
   rules:
     - name: admin-delegation
+      roles: [admin]                   # who may delegate under this rule (0.2)
       allowed_actions: [read, write, deploy]
       max_duration: 86400
     - name: editor-delegation
+      roles: [editor]
       allowed_actions: [read, write]
       max_duration: 14400
       require_reason: true
@@ -78,11 +80,43 @@ delegation:
 
 | Constraint | Description |
 |---|---|
-| `enabled` | If `false`, all delegation requests are rejected |
+| `enabled` | If `false`, new delegations are refused **and existing ones stop applying** |
 | `max_duration` | Global maximum in seconds |
-| `rules` | Additional constraints (per-rule allowed_actions, max_duration, require_reason) |
+| `rules` | Additional constraints (per-rule allowed_actions, max_duration, require_reason, roles) |
 
-If a delegation request violates any constraint, a `ValueError` is raised.
+If a delegation request violates any constraint, a `ValueError` is raised. The constraints are
+checked again every time a delegation is used: tightening a rule, or disabling delegation,
+takes effect on delegations that already exist.
+
+### Who may delegate what (0.2)
+
+Without rules, **any user may delegate any action** to an agent for their own requests (denials
+and code limits still apply): a sales user could delegate `approve_invoice`, a finance-only
+grant, to their assistant. Say who may delegate with `roles`:
+
+```yaml
+delegation:
+  rules:
+    - name: finance-delegates
+      roles: [finance]                 # the delegating user's roles (from user_roles)
+      allowed_actions: [approve_invoice, "read:*"]
+    - name: everyone-reads
+      roles: [sales, finance]
+      allowed_actions: ["read:*"]
+```
+
+- Rules **with** `roles`: when any exist, the delegating user must hold a role of at least one of
+  them that allows every delegated action. Checked with the user's *current* roles at each use:
+  a user who leaves finance loses the effect of their finance delegations.
+- Rules **without** `roles` apply to everyone, all of them (as in 0.1).
+- Action patterns are compared without reading wildcards as text: a rule allowing
+  `read:[!s]*` refuses a delegation of `read:*`.
+- `engine.create_delegation` refuses an agent with no profile. The CLI's `--from-user` is not
+  authenticated: whoever can run it can delegate as anyone. Expose delegation to users through
+  your application, after authenticating them.
+
+Delegations are stored in `delegations.jsonl` next to the audit log; every engine reading that
+directory sees them, and a revocation in one process takes effect in the others.
 
 ---
 
@@ -118,16 +152,9 @@ agent-auth -c agent_auth.yaml delegations --list
 
 ---
 
-## How delegation interacts with the pipeline
+## How delegation interacts with resolution
 
-In the authorization pipeline, delegation is checked at **step 5** — after session validation, profile deny check, and profile allow check, but before user permissions and A2A. If an active delegation grants the requested action to the agent, the action is allowed.
-
-```
-[4] Check profile allow list
-        |
-        v
-[5] Check delegations  <-- active grant? allow the action
-        |
-        v
-[6] Check user permissions
-```
+A user's active delegations to an agent are part of what the agent may do **for that user**
+(see [Resolution](resolution.md)): `baseline ∪ grants ∪ delegations`, then minus the profile's
+`deny` and the code limits. Denials and limits always win over a delegation; a delegation never
+applies to another user or to a service request.

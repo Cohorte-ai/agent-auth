@@ -148,6 +148,8 @@ Full documentation: [cohorte-ai.github.io/agent-auth](https://cohorte-ai.github.
 | Topic | Link |
 |---|---|
 | Concepts | [concepts](https://cohorte-ai.github.io/agent-auth/concepts/) |
+| Resolution (0.2) | [resolution](https://cohorte-ai.github.io/agent-auth/resolution/) |
+| Delegation | [delegation](https://cohorte-ai.github.io/agent-auth/delegation/) |
 | Config syntax | [config-syntax](https://cohorte-ai.github.io/agent-auth/config-syntax/) |
 | CLI reference | [cli](https://cohorte-ai.github.io/agent-auth/cli/) |
 | API reference | [api-reference](https://cohorte-ai.github.io/agent-auth/api-reference/) |
