@@ -59,6 +59,12 @@ The adapter:
 4. If auth requires approval, returns `Decision(outcome="require_approval")`
 5. If auth passes, delegates to the guardrails engine
 
+**Which action is checked.** For a `tool_call` event, the tool: `data["tool_name"]`, as
+guardrails' LangChain and OpenAI Agents adapters send it. For an event with `data["action"]`,
+that action. An event whose `tool_name` and `action` differ is denied. Other events are checked
+as their type.
+A `tool_call` without `tool_name`, or a non-string `tool_name`, `action` or `resource`, is denied.
+
 ---
 
 ## HTTP middleware

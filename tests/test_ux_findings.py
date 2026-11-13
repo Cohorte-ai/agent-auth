@@ -202,3 +202,60 @@ def test_a_delegation_applies_only_to_the_user_who_granted_it(tmp_path: Path) ->
         os.chdir(cwd)
     assert bob.allowed
     assert not alice.allowed
+
+
+def test_guardrails_adapter_checks_the_tool_of_a_tool_call(tmp_path: Path) -> None:
+    pytest.importorskip("theaios.guardrails")
+    from theaios.guardrails.engine import Engine
+    from theaios.guardrails.types import GuardEvent, PolicyConfig
+
+    from theaios.agent_auth.adapters.guardrails import GuardrailsAuthAdapter
+
+    path = tmp_path / "agent_auth.yaml"
+    path.write_text(
+        'version: "1.0"\nroles:\n  all: {actions: ["*"]}\n'
+        "profiles:\n  bot: {role: all, deny: ['payments:*']}\naudit:\n  enabled: false\n"
+    )
+    adapter = GuardrailsAuthAdapter(load_config(str(path)), Engine(PolicyConfig()))
+
+    def outcome(data: dict[str, object], scope: str = "tool_call") -> str:
+        return adapter.evaluate(GuardEvent(scope=scope, agent="bot", data=data), user="u").outcome
+
+    # guardrails' LangChain and OpenAI Agents adapters send the tool as data["tool_name"]
+    assert outcome({"tool_name": "payments:transfer", "arguments": {}}) == "deny"
+    assert outcome({"tool_name": "read:docs", "arguments": {}}) == "allow"
+    assert outcome({"tool_name": "payments:transfer", "action": "read:docs"}) == "deny"
+    assert outcome({"tool_name": "read:docs", "action": "read:docs"}) == "allow"
+    assert outcome({"arguments": {}}) == "deny"  # a tool call must name its tool
+    assert outcome({"action": ["payments:transfer"]}, scope="action") == "deny"  # not str()
+    assert outcome({"action": "read:x", "resource": ["inv-1"]}, scope="action") == "deny"
+    assert outcome({"action": "read:x"}, scope="action") == "allow"
+
+
+def test_middleware_decides_head_as_get(tmp_path: Path) -> None:
+    import asyncio
+
+    pytest.importorskip("starlette")
+    from theaios.agent_auth.adapters.middleware import fastapi_auth_middleware
+
+    path = tmp_path / "agent_auth.yaml"
+    path.write_text(
+        BASE.replace("role: ops", "role: ops\n    allow: ['*']\n    deny: ['get:/admin*']")
+        + "audit:\n  enabled: false\n"
+    )
+    engine = AuthEngine(load_config(str(path)))
+
+    class URL:
+        path = "/admin/users"
+
+    class Req:
+        def __init__(self, method: str) -> None:
+            self.method, self.url = method, URL()
+            self.headers = {"X-Agent-Name": "finbot", "X-User-Name": "alice"}
+
+    async def ok(_req: object) -> str:
+        return "ran"
+
+    for method in ("GET", "HEAD"):  # HEAD runs the GET handler
+        out = asyncio.run(fastapi_auth_middleware(engine, Req(method), ok))
+        assert out != "ran", method
