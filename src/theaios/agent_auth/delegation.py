@@ -253,7 +253,7 @@ class DelegationManager:
 
             # Check if action matches
             for delegated_action in grant.actions:
-                if fnmatch.fnmatch(action, delegated_action):
+                if fnmatch.fnmatchcase(action, delegated_action):
                     return grant
 
         return None

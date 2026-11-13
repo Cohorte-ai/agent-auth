@@ -102,9 +102,9 @@ Conditions use the safe expression language. Available variables:
 | `agent` | `str` | The agent making the request (in a sub-agent chain, the last one: use `from_agent`/`to_agent` for the hop) |
 | `metadata.<key>` | any | Request metadata |
 
-Deny policies match agents and the action regardless of case, and their conditions too
-(evaluated as written and with every string folded on both sides; either match denies). Allow
-policies match exactly.
+Deny policies match agents and the action regardless of case (a pattern matches the name as
+written or case-folded), and their conditions too (see
+[expressions](expressions.md#case)). Allow policies match exactly.
 
 ```yaml
 policies:

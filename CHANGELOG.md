@@ -66,9 +66,16 @@ A re-check of the integration paths confirmed those fixes (token-mode middleware
 A re-verification of those fixes confirmed all five and found more, also fixed with tests:
 
 - An event whose tool name and action differ is denied (one action per event): checking both could leave a separation-of-duties record for an action that was refused.
-- Restriction conditions (approval, A2A deny) are evaluated as written and with every string folded on both sides: a mixed-case literal (`action == "deleteUser"`) missed `DELETEUSER`, and a `!=` against a mixed-case literal denied the value it names.
+- Restriction conditions (approval, A2A deny) ignore case on both sides: a mixed-case literal (`action == "deleteUser"`) missed `DELETEUSER`.
 - Actions with a character whose upper case folds differently (dotless `ı`: `drop_ındex` escaped a `drop_index` limit, while `upper()` makes it `DROP_INDEX`) are refused.
 - The docs warn that the HTTP middleware does not see WebSocket connections, and that the guardrails adapter decides a sub-agent on its own resolution.
+
+A further re-verification confirmed those and found more, also fixed with tests:
+
+- Evaluating a restriction in two uniform passes (as written, all folded) let a request split spellings: `db:DROP` on `Scratch` escaped `action == "db:drop" and resource != "scratch"`, and a `!=` against a mixed-case literal denied the value it names. Each comparison is now read as written or folded, whichever makes the restriction apply (flipped under `not`); a randomized test checks it never drops what the condition as written applies.
+- Denial and limit patterns, A2A deny patterns and separation-of-duties actions match the action as written or case-folded: folding alone let `db:drop_ß` escape `db:drop_?` and `cfg:ADMIN` escape `cfg:[!a-z]*` (denied in 0.1.4).
+- Deeply nested metadata no longer raises `RecursionError`; restriction checks fold the request once per decision (200 A2A deny policies: 0.8 ms).
+- Scopes, delegations and allow patterns match exactly on every platform (`fnmatch.fnmatch` ignored case on Windows).
 
 ### Deprecated
 

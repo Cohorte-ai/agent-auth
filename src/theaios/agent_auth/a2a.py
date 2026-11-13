@@ -10,7 +10,8 @@ from theaios.agent_auth.expressions import (
     compile_expression,
     evaluate as eval_expr,
 )
-from theaios.agent_auth.casefold import fold_ast, fold_value
+from theaios.agent_auth.casefold import Restriction, fold_context
+from theaios.agent_auth.resolution import denial_matches
 from theaios.agent_auth.config import condition_errors
 from theaios.agent_auth.types import A2AConfig, A2APolicyConfig
 
@@ -29,8 +30,7 @@ class A2AEvaluator:
     ) -> None:
         self._default = config.default
         self._variables = variables or {}
-        self._folded_variables = {k: fold_value(v) for k, v in self._variables.items()}
-        self._policies: list[tuple[A2APolicyConfig, ASTNode, ASTNode]] = []
+        self._policies: list[tuple[A2APolicyConfig, ASTNode, Restriction]] = []
 
         for policy in config.policies:
             try:
@@ -42,7 +42,7 @@ class A2AEvaluator:
             problems = condition_errors(policy.condition, self._variables)
             if problems:
                 raise ExpressionError(f"Error in A2A policy '{policy.name}': {'; '.join(problems)}")
-            self._policies.append((policy, ast, fold_ast(ast)))
+            self._policies.append((policy, ast, Restriction(ast, self._variables)))
 
     def may_reach(self, from_agent: str, to_agent: str) -> bool:
         """Whether any action from ``from_agent`` to ``to_agent`` could be allowed: an allow
@@ -90,15 +90,16 @@ class A2AEvaluator:
         deny_reason: str | None = None
         allow_reason: str | None = None
 
-        for policy, ast, folded in self._policies:
+        folded_context: dict[str, object] | None = None
+        for policy, ast, restriction in self._policies:
             # Check agent patterns
             # Deny policies match agents and action regardless of case (fail closed); allow
             # policies match them exactly.
             if policy.effect == "deny":
                 if not (
-                    fnmatch.fnmatchcase(from_agent.casefold(), policy.from_agent.casefold())
-                    and fnmatch.fnmatchcase(to_agent.casefold(), policy.to_agent.casefold())
-                    and fnmatch.fnmatchcase(action.casefold(), policy.action.casefold())
+                    denial_matches(from_agent, policy.from_agent)
+                    and denial_matches(to_agent, policy.to_agent)
+                    and denial_matches(action, policy.action)
                 ):
                     continue
             elif not (
@@ -108,23 +109,19 @@ class A2AEvaluator:
             ):
                 continue
 
-            # Evaluate condition. A deny condition ignores case like its patterns: it is
-            # evaluated on the request as written and again with every string folded on both
-            # sides (casefold.py), and denies if either matches. Allow conditions are exact.
-            passes = [(ast, eval_context, self._variables)]
-            if policy.effect == "deny":
-                folded_context = {k: fold_value(v) for k, v in eval_context.items()}
-                passes.append((folded, folded_context, self._folded_variables))
-            result = False
-            for node, ctx, variables in passes:
-                try:
-                    result = bool(eval_expr(node, context=ctx, variables=variables))
-                except ExpressionError:
-                    # Fail closed: a deny policy that cannot be evaluated denies; an allow
-                    # policy that cannot be evaluated grants nothing.
-                    result = policy.effect == "deny"
-                if result:
-                    break
+            # Evaluate condition. A deny condition ignores case like its patterns
+            # (casefold.py); an allow condition is exact.
+            try:
+                if policy.effect == "deny":
+                    if folded_context is None:
+                        folded_context = fold_context(eval_context)
+                    result = restriction.holds(eval_context, folded_context)
+                else:
+                    result = bool(eval_expr(ast, context=eval_context, variables=self._variables))
+            except ExpressionError:
+                # Fail closed: a deny policy that cannot be evaluated denies; an allow policy
+                # that cannot be evaluated grants nothing.
+                result = policy.effect == "deny"
 
             if not result:
                 continue

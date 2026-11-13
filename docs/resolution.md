@@ -92,11 +92,13 @@ an agent that has a profile (no other wildcard), values lists of patterns.
 
 Denials, limits, approval conditions and A2A deny policies (patterns and conditions) match
 **regardless of case** (`payments:*` blocks `PAYMENTS:transfer`; an approval on `db:delete`
-covers `db:DELETE`, for the agent and for its sub-agents; a condition is evaluated as written
-and with every string folded on both sides, and applies if either matches); capabilities and
-allow policies match exactly. Use one spelling for your actions. An action that is empty or
-surrounded by spaces, or containing control, invisible or look-alike (non-NFKC) characters, or a
-character whose upper case folds differently (dotless `ı`), is refused. A request scope is a value, never a pattern: a scope containing `*`, `?` or `[` is
+covers `db:DELETE`, for the agent and for its sub-agents; see
+[expressions](expressions.md#case) for conditions); a pattern matches the action as written or
+case-folded. Capabilities, grants, delegations, scopes and allow policies match exactly. Use one
+spelling for your actions. An action that is empty or surrounded by spaces, or containing
+control, invisible or look-alike (non-NFKC) characters, or a character whose upper case folds
+to something else (only the dotless `ı`, so Turkish action names such as `kullanıcı_sil` are
+refused: use ASCII action names), is refused. A request scope is a value, never a pattern: a scope containing `*`, `?` or `[` is
 refused, and a session whose scope is a pattern does not hand it to requests without one.
 
 ---

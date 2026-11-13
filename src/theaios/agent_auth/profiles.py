@@ -76,12 +76,14 @@ def check_action(
     """
     # Check deny first (deny takes precedence)
     for pattern in profile.denied_actions:
-        if fnmatch.fnmatch(action, pattern):
+        if fnmatch.fnmatchcase(action, pattern) or fnmatch.fnmatchcase(
+            action.casefold(), pattern.casefold()
+        ):
             return "deny"
 
     # Check allow
     for pattern in profile.effective_actions:
-        if fnmatch.fnmatch(action, pattern):
+        if fnmatch.fnmatchcase(action, pattern):
             return "allow"
 
     return None
@@ -100,7 +102,7 @@ def check_scope(
         return True
 
     for pattern in profile.allowed_scopes:
-        if fnmatch.fnmatch(scope, pattern):
+        if fnmatch.fnmatchcase(scope, pattern):
             return True
 
     return False

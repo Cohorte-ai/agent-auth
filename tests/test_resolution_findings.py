@@ -797,3 +797,84 @@ def test_actions_whose_upper_case_folds_differently_are_refused(tmp_path: Path) 
     assert not d.allowed and d.provenance == ["action"]
     assert not e.explain(_req("", "DROP_INDEX", agent="intern-bot")).allowed
     assert e.explain(_req("", "Stra\u00dfe", agent="intern-bot")).allowed  # ß is fine
+
+
+# --- Re-verification at 14eecf6 ------------------------------------------------------------
+
+
+def test_a_request_cannot_split_spellings_across_a_restriction(tmp_path: Path) -> None:
+    cond = '\'action == "db:drop" and resource != "scratch"\''
+    extra = (
+        f"approval_policies:\n  - {{name: drop, condition: {cond}, tier: strong}}\n"
+        "a2a:\n  default: allow\n  policies:\n"
+        f"    - {{name: no-drop, from_agent: '*', to_agent: '*', effect: deny, condition: {cond}}}\n"
+    )
+    e = _engine(tmp_path, extra)
+    for action, resource in [
+        ("db:drop", "Scratch"),
+        ("db:DROP", "Scratch"),
+        ("db:Drop", "sCratch"),
+    ]:
+        d = e.explain(_req("", action, agent="intern-bot", resource=resource))
+        assert d.tier == "strong", (action, resource)
+        d = e.explain(
+            _req("", action, agent="intern-bot", resource=resource, target_agent="nightly")
+        )
+        assert not d.allowed, (action, resource)
+    # the exception itself still exempts, in any spelling of the action
+    for action in ("db:drop", "DB:DROP"):
+        assert (
+            e.explain(_req("", action, agent="intern-bot", resource="scratch")).tier == "autonomous"
+        )
+
+
+def test_deny_patterns_with_single_character_wildcards_and_classes(tmp_path: Path) -> None:
+    extra = (
+        "  guarded: {role: everything, deny: ['db:drop_?', 'cfg:[!a-z]*']}\n"
+        "separation_of_duties:\n  - {name: two, actions: ['pay_?', approve]}\n"
+    )
+    e = _engine(tmp_path, extra, limits={"intern-bot": ["db:drop_?", "cfg:[!a-z]*"]})
+    for agent in ("guarded", "intern-bot"):
+        for action in ("db:drop_\u00df", "db:drop_\u0130", "cfg:ADMIN", "db:drop_x"):
+            assert not e.explain(_req("", action, agent=agent)).allowed, (agent, action)
+        assert e.explain(_req("", "cfg:admin", agent=agent)).allowed
+    assert e.authorize(_req("alice", "pay_\u00df", agent="intern-bot", resource="r")).allowed
+    assert not e.authorize(_req("alice", "approve", agent="intern-bot", resource="r")).allowed
+
+
+def test_deeply_nested_metadata_is_decided_not_raised(tmp_path: Path) -> None:
+    extra = "approval_policies:\n  - {name: m, condition: 'action == \"read:x\"', tier: soft}\n"
+    e = _engine(tmp_path, extra)
+    deep: object = "X"
+    for _ in range(5000):
+        deep = [deep]
+    d = e.explain(_req("", "READ:X", agent="intern-bot", metadata={"deep": deep}))
+    assert d.allowed and d.tier == "soft"  # decided, no RecursionError
+
+
+def test_case_insensitive_restrictions_never_drop_what_the_condition_applies() -> None:
+    import random
+
+    from theaios.agent_auth.casefold import Restriction, fold_context
+    from theaios.agent_auth.expressions import compile_expression, evaluate
+
+    words = ["drop", "DROP", "Drop", "scratch", "Scratch", "x"]
+    atoms = [
+        'action == "{}"',
+        'action != "{}"',
+        'resource == "{}"',
+        'resource != "{}"',
+        'resource in ["{}", "y"]',
+        'resource not in ["{}"]',
+        'action starts_with "{}"',
+    ]
+    rng = random.Random(7)
+    for _ in range(3000):
+        parts = [rng.choice(atoms).format(rng.choice(words)) for _ in range(rng.randint(1, 3))]
+        parts = [f"not ({p})" if rng.random() < 0.3 else p for p in parts]
+        src = f" {rng.choice(['and', 'or'])} ".join(parts)
+        ctx: dict[str, object] = {"action": rng.choice(words), "resource": rng.choice(words)}
+        ast = compile_expression(src)
+        written = bool(evaluate(ast, context=ctx, variables={}))
+        folded = Restriction(ast, {}).holds(ctx, fold_context(ctx))
+        assert folded or not written, (src, ctx)

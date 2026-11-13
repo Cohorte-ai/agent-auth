@@ -119,10 +119,19 @@ Available context fields depend on where the expression is used:
 
 A2A **deny** policies match the action regardless of case; allow policies match it exactly.
 
-A restriction's condition (approval policies, A2A deny policies) is evaluated twice: as
-written, and with every string folded on both sides (the request's values and the condition's
-literals). It applies if either matches: `action == "deleteUser"` also covers `DELETEUSER`,
-and `resource == "prod"` covers `PROD`.
+### Case
+
+A restriction's condition (approval policies, A2A deny policies) applies if **some reading**
+of it matches, where each comparison may be read as written or with every string case-folded on
+both sides (the request's values, the condition's literals, the config's variables). Under
+`not`, a comparison counts only if it holds in both readings. So:
+
+- `action == "deleteUser"` also covers `DELETEUSER`; `resource == "prod"` covers `PROD`.
+- `action == "db:drop" and resource != "scratch"` covers `db:DROP` on `Scratch` (the request
+  cannot match the first part only when folded and the exception only as written).
+- `action != "getReport"` stays false for `getReport`.
+
+Grants and allow conditions match exactly.
 
 ---
 

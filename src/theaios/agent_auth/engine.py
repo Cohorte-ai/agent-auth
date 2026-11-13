@@ -32,6 +32,7 @@ from theaios.agent_auth.resolution import (
     SERVICE,
     Principal,
     ResolvedAgent,
+    denial_matches,
     resolve,
 )
 from theaios.agent_auth import tokens
@@ -388,7 +389,7 @@ class AuthEngine:
                 (profile is not None and not check_scope(profile, request.scope))
                 or (
                     resolved.scopes
-                    and not any(fnmatch.fnmatch(request.scope, x) for x in resolved.scopes)
+                    and not any(fnmatch.fnmatchcase(request.scope, x) for x in resolved.scopes)
                 )
             )
         )
@@ -732,7 +733,7 @@ class AuthEngine:
     def _sod_conflict(self, request: AuthRequest) -> str | None:
         action = request.action.casefold()
         for rule in self._config.separation_of_duties:
-            if not any(fnmatch.fnmatchcase(action, a.casefold()) for a in rule.actions):
+            if not any(denial_matches(request.action, a) for a in rule.actions):
                 continue
             done = self._sod_done.get(self._sod_key(request, rule.name), set())
             others = sorted(a for a in done if a != action)
@@ -746,7 +747,7 @@ class AuthEngine:
     def _sod_record(self, request: AuthRequest) -> None:
         action = request.action.casefold()
         for rule in self._config.separation_of_duties:
-            if any(fnmatch.fnmatchcase(action, a.casefold()) for a in rule.actions):
+            if any(denial_matches(request.action, a) for a in rule.actions):
                 self._sod_done.setdefault(self._sod_key(request, rule.name), set()).add(action)
 
     def _condition_context(self, request: AuthRequest) -> dict[str, object]:
