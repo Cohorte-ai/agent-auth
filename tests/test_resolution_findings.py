@@ -878,3 +878,63 @@ def test_case_insensitive_restrictions_never_drop_what_the_condition_applies() -
         written = bool(evaluate(ast, context=ctx, variables={}))
         folded = Restriction(ast, {}).holds(ctx, fold_context(ctx))
         assert folded or not written, (src, ctx)
+
+
+# --- Re-verification at c2ad7af ------------------------------------------------------------
+
+
+def test_every_case_variant_of_a_denied_action_is_denied() -> None:
+    import unicodedata
+
+    from theaios.agent_auth.resolution import denial_matches
+
+    cased = [
+        chr(cp)
+        for cp in range(0x80, 0x110000)
+        if not 0xD800 <= cp <= 0xDFFF
+        and (lambda c: c.lower() != c or c.upper() != c or c.casefold() != c)(chr(cp))
+        and unicodedata.normalize("NFKC", chr(cp)) == chr(cp)
+        and unicodedata.category(chr(cp)) not in ("Cc", "Cf")
+        and chr(cp).upper().casefold() == chr(cp).casefold()  # the engine refuses the rest
+    ]
+    assert len(cased) > 1000
+    for ch in cased:
+        for prefix in ("db:drop_", "DB:DROP_", "Db:Drop_"):
+            assert denial_matches(prefix + ch, "db:drop_?"), (prefix, hex(ord(ch)))
+
+
+def test_a_denied_mixed_case_action_escapes_nothing(tmp_path: Path) -> None:
+    extra = "separation_of_duties:\n  - {name: two, actions: ['pay_?', approve]}\n"
+    e = _engine(tmp_path, extra, limits={"intern-bot": ["db:drop_?"]})
+    for action in ("DB:DROP_ß", "Db:Drop_ß", "DB:DROP_İ"):
+        assert not e.explain(_req("", action, agent="intern-bot")).allowed, action
+    assert e.authorize(_req("alice", "PAY_ß", agent="intern-bot", resource="r")).allowed
+    assert not e.authorize(_req("alice", "approve", agent="intern-bot", resource="r")).allowed
+
+
+def test_a_restriction_that_errors_as_written_applies(tmp_path: Path) -> None:
+    cond = (
+        '\'(action == "Payments:Transfer" or metadata.amount > 1000)'
+        ' and metadata.currency == "EUR"\''
+    )
+    e = _engine(
+        tmp_path, f"approval_policies:\n  - {{name: big, condition: {cond}, tier: strong}}\n"
+    )
+    d = e.explain(
+        _req(
+            "",
+            "payments:transfer",
+            agent="intern-bot",
+            metadata={"amount": "lots", "currency": "USD"},
+        )
+    )
+    assert d.tier == "strong"  # the condition as written raises: fail closed
+
+
+def test_long_restriction_chains_build_and_decide(tmp_path: Path) -> None:
+    cond = " or ".join(["x==1"] * 1200)  # under the 10,000-character limit
+    e = _engine(
+        tmp_path, f"approval_policies:\n  - {{name: many, condition: '{cond}', tier: soft}}\n"
+    )
+    assert e.explain(_req("", "a", agent="intern-bot", metadata={"x": 1})).tier == "soft"
+    assert e.explain(_req("", "a", agent="intern-bot", metadata={"x": 2})).tier == "autonomous"

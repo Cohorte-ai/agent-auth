@@ -65,39 +65,52 @@ class Restriction:
 
     def __init__(self, ast: ASTNode, variables: dict[str, object]) -> None:
         self._ast = ast
-        self._folded = fold_ast(ast)
         self._variables = variables  # the config's mapping, not a copy
-        self._folded_variables = {k: fold_value(v) for k, v in self._variables.items()}
+        self._folded_variables = {k: fold_value(v) for k, v in variables.items()}
+        self._folded_atoms: dict[int, ASTNode] = {}
 
     def holds(self, context: dict[str, object], folded_context: dict[str, object]) -> bool:
         """Whether the restriction applies. ``folded_context`` is ``fold_context(context)``,
-        computed once per decision. Raises ExpressionError like the plain evaluator."""
-        return self._eval(self._ast, self._folded, context, folded_context, positive=True)
+        computed once per decision. The condition is first evaluated as written, so an
+        expression error raises (the caller then applies the restriction: fail closed)."""
+        if eval_expr(self._ast, context=context, variables=self._variables):
+            return True
+        return self._eval(self._ast, context, folded_context, positive=True)
+
+    def _folded(self, atom: ASTNode) -> ASTNode:
+        folded = self._folded_atoms.get(id(atom))
+        if folded is None:
+            folded = self._folded_atoms[id(atom)] = fold_ast(atom)
+        return folded
 
     def _eval(
-        self,
-        node: object,
-        folded: object,
-        ctx: dict[str, object],
-        fctx: dict[str, object],
-        positive: bool,
+        self, node: object, ctx: dict[str, object], fctx: dict[str, object], positive: bool
     ) -> bool:
         if isinstance(node, BinaryOp) and node.op in ("and", "or"):
-            assert isinstance(folded, BinaryOp)
-            left = self._eval(node.left, folded.left, ctx, fctx, positive)
-            if node.op == "and" and not left:
-                return False
-            if node.op == "or" and left:
-                return True
-            return self._eval(node.right, folded.right, ctx, fctx, positive)
+            # Walk the left-deep spine iteratively, as the core evaluator does, so a long
+            # chain cannot exhaust the recursion limit.
+            op = node.op
+            operands: list[object] = []
+            spine: object = node
+            while isinstance(spine, BinaryOp) and spine.op == op:
+                operands.append(spine.right)
+                spine = spine.left
+            operands.append(spine)
+            for operand in reversed(operands):
+                value = self._eval(operand, ctx, fctx, positive)
+                if op == "and" and not value:
+                    return False
+                if op == "or" and value:
+                    return True
+            return op == "and"
         if isinstance(node, UnaryOp) and node.op == "not":
-            assert isinstance(folded, UnaryOp)
-            return not self._eval(node.operand, folded.operand, ctx, fctx, not positive)
+            return not self._eval(node.operand, ctx, fctx, not positive)
         # A comparison (or a bare value): read it both ways.
         as_written = bool(eval_expr(node, context=ctx, variables=self._variables))  # type: ignore[arg-type]
         if as_written == positive:  # already the reading that favours the restriction
             return as_written
-        return bool(eval_expr(folded, context=fctx, variables=self._folded_variables))  # type: ignore[arg-type]
+        folded = self._folded(node)  # type: ignore[arg-type]
+        return bool(eval_expr(folded, context=fctx, variables=self._folded_variables))
 
 
 def fold_context(context: Mapping[str, object]) -> dict[str, object]:

@@ -48,10 +48,12 @@ def covers(outer: str, inner: str) -> bool:
 def denial_matches(action: str, pattern: str) -> bool:
     """Denials and limits match regardless of case: ``DELETE_users`` is still a ``delete_*``.
 
-    As written or folded: folding alone would let ``db:drop_ß`` (folded to two characters)
-    escape ``db:drop_?`` and ``cfg:ADMIN`` escape ``cfg:[!a-z]*``."""
-    return fnmatch.fnmatchcase(action, pattern) or fnmatch.fnmatchcase(
-        action.casefold(), pattern.casefold()
+    Tried as written, case-folded, lower-cased and upper-cased: one reading alone would let
+    ``db:drop_ß`` (folded to two characters) or ``DB:DROP_ß`` escape ``db:drop_?``, and
+    ``cfg:ADMIN`` escape ``cfg:[!a-z]*``."""
+    return any(
+        fnmatch.fnmatchcase(fold(action), fold(pattern))
+        for fold in (str, str.casefold, str.lower, str.upper)
     )
 
 

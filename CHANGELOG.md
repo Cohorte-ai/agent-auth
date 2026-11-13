@@ -77,6 +77,11 @@ A further re-verification confirmed those and found more, also fixed with tests:
 - Deeply nested metadata no longer raises `RecursionError`; restriction checks fold the request once per decision (200 A2A deny policies: 0.8 ms).
 - Scopes, delegations and allow patterns match exactly on every platform (`fnmatch.fnmatch` ignored case on Windows).
 
+A last re-verification confirmed those against a brute-force reference (80,000 random conditions) and found one more gap, fixed with tests:
+
+- `DB:DROP_ß` still escaped `db:drop_?` (neither the written nor the folded reading matched): deny patterns now also try the lower- and upper-cased action; a test checks every cased Unicode character.
+- A restriction whose condition raises an error as written now always applies (fail closed); long `and`/`or` chains no longer exhaust the recursion limit when the engine is built.
+
 ### Deprecated
 
 - `user_permissions_provider` union (an agent may do anything its user may do): emits a `FutureWarning` naming the agent, action and user the first time it decides each (agent, action) pair. Use `grants`; set `resolution: {user_permissions: ignore}` to turn it off now. Removed in 1.0.
