@@ -399,3 +399,136 @@ def test_duplicate_separation_of_duties_actions_are_refused(tmp_path: Path) -> N
     path.write_text(BASE + "separation_of_duties:\n  - {name: p, actions: [a, b, b]}\n")
     with pytest.raises(ConfigError, match="listed twice"):
         load_config(str(path))
+
+
+# --- Second re-verification (round 3) --------------------------------------------------------------
+
+PAY = """
+  pa: {role: reader, grants: {finance: ["pay:*"]}}
+  pc: {role: everything}
+approval_policies:
+  - {name: pa-pay, condition: 'agent == "pa" and action starts_with "pay"', tier: strong}
+a2a:
+  default: deny
+  policies:
+    - {name: pa-pc, from_agent: pa, to_agent: pc, effect: allow}
+"""
+
+
+def test_a_parents_approval_policy_passes_to_its_sub_agents(tmp_path: Path) -> None:
+    path = tmp_path / "agent_auth.yaml"
+    path.write_text(BASE + PAY + "audit:\n  enabled: false\n")
+    e = AuthEngine(load_config(str(path)), user_roles=lambda u: ROLES.get(u, []))
+    child = e.delegate(e.resolve("pa", e.principal("alice")), "pc")
+    d = e.explain(_req("alice", "pay:1", agent="pc"), resolved=child)
+    assert d.allowed and d.tier == "strong" and d.approval_policy == "pa-pay@pa"
+
+
+def test_authorize_async_accepts_a_resolution(tmp_path: Path) -> None:
+    import asyncio
+
+    e = _engine(tmp_path, user_roles=lambda u: {"alice": ["sales"]}.get(u, []))
+    snap = e.resolve("assistant", e.principal("alice"))
+    stale = _engine(tmp_path).resolve("assistant", _engine(tmp_path).principal("alice"))
+    assert asyncio.run(e.authorize_async(_req("alice", "read:x"), resolved=snap)).allowed
+    d = asyncio.run(e.authorize_async(_req("alice", "read:x"), resolved=stale))
+    assert not d.allowed and "stale" in d.reason
+
+
+def test_separation_of_duties_holds_under_concurrency(tmp_path: Path) -> None:
+    import sys
+    import threading
+
+    e = _engine(tmp_path, SOD)
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        for i in range(200):
+            barrier = threading.Barrier(2)
+            results: list[bool] = []
+
+            def go(action: str, i: int = i) -> None:
+                barrier.wait()
+                req = _req("alice", action, agent="payer", resource=f"inv-{i}")
+                results.append(e.authorize(req).allowed)
+
+            ts = [
+                threading.Thread(target=go, args=(a,))
+                for a in ("create_payment", "approve_payment")
+            ]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+            assert results.count(True) == 1, i
+    finally:
+        sys.setswitchinterval(old)
+
+
+def test_reasons_name_the_parent(tmp_path: Path) -> None:
+    extra = "  denier: {role: reader, deny: ['read:secret']}\n" + (
+        "a2a:\n  default: deny\n  policies:\n"
+        "    - {name: d-r, from_agent: denier, to_agent: researcher, effect: allow}\n"
+    )
+    e = _engine(tmp_path, extra)
+    child = e.delegate(e.resolve("denier", e.principal("alice")), "researcher")
+    d = e.authorize(_req("alice", "read:secret", agent="researcher"), resolved=child)
+    assert not d.allowed and "denied by profile 'denier', which delegated" in d.reason
+
+
+def test_chains_are_capped(tmp_path: Path) -> None:
+    extra = "a2a:\n  default: allow\n"
+    e = _engine(tmp_path, extra)
+    r = e.resolve("researcher", e.principal("alice"))
+    with pytest.raises(ValueError, match="limited to 16"):
+        for _ in range(20):
+            r = e.delegate(r, "researcher")
+
+
+def test_roles_are_looked_up_once_per_resolution(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def roles(u: str) -> list[str]:
+        calls.append(u)
+        return ROLES.get(u, [])
+
+    e = _engine(tmp_path, user_roles=roles)
+    for i in range(30):
+        e.create_delegation("alice", "assistant", [f"task:{i}"], 600, "x")
+    calls.clear()
+    e.authorize(_req("alice", "task:3"))
+    assert len(calls) == 1
+
+
+def test_separation_of_duties_normalises_the_user(tmp_path: Path) -> None:
+    e = _engine(tmp_path, SOD)
+    assert e.authorize(_req("alice", "create_payment", agent="payer", resource="r")).allowed
+    assert not e.authorize(_req("Alice", "approve_payment", agent="payer", resource="r")).allowed
+
+
+@pytest.mark.parametrize(
+    "action", ["delete_users\x00", "delete_users\u200b", "\u200bdelete_users", "\uff44elete_users"]
+)
+def test_actions_with_hidden_or_look_alike_characters_are_refused(
+    tmp_path: Path, action: str
+) -> None:
+    e = _engine(tmp_path, limits={"intern-bot": ["delete_*"]})
+    d = e.authorize(_req("", action, agent="intern-bot"))
+    assert not d.allowed and "Invalid action" in d.reason
+
+
+def test_the_middleware_token_mode_ignores_identity_headers(tmp_path: Path) -> None:
+    from theaios.agent_auth.adapters.middleware import _decide
+
+    e = _engine(tmp_path)
+    forged = {"X-Agent-Name": "assistant", "X-User-Name": "alice"}
+    assert _decide(e, forged, "read:x", "", "mcp://x", "X-Agent-Name", "X-User-Name", "S") == (
+        401,
+        {"error": "a Bearer token is required"},
+    )
+    token = e.issue_token(e.resolve("assistant", e.principal("bob")), "mcp://x")
+    ok = {"Authorization": f"Bearer {token}", "X-User-Name": "alice"}
+    assert _decide(e, ok, "read:x", "", "mcp://x", "X-Agent-Name", "X-User-Name", "S") is None
+    finance = {"Authorization": f"Bearer {token}"}
+    status = _decide(e, finance, "approve_invoice", "", "mcp://x", "a", "u", "s")
+    assert status is not None and status[0] == 403  # bob (sales) has no finance grant
