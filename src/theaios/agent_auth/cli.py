@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 
 import click
 
@@ -15,6 +16,7 @@ from theaios.agent_auth.reporting import (
     export_audit_json,
     print_audit_summary,
     print_auth_result,
+    print_preview,
     print_config_summary,
     print_delegations_list,
     print_sessions_list,
@@ -99,7 +101,11 @@ def inspect(ctx: click.Context) -> None:
 
 @main.command()
 @click.option("--agent", "-a", required=True, help="Agent name")
-@click.option("--user", "-u", required=True, help="User name")
+@click.option("--user", "-u", default="", help="User the agent acts for")
+@click.option(
+    "--roles", default="", help="The user's roles, comma-separated (for grants and access)"
+)
+@click.option("--service", is_flag=True, help="The agent acts as a service, for no user")
 @click.option("--action", required=True, help="Action to check")
 @click.option("--resource", "-r", default="", help="Resource")
 @click.option("--scope", "-s", default="", help="Scope")
@@ -110,6 +116,8 @@ def check(
     ctx: click.Context,
     agent: str,
     user: str,
+    roles: str,
+    service: bool,
     action: str,
     resource: str,
     scope: str,
@@ -124,14 +132,18 @@ def check(
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    engine = AuthEngine(config)
+    if not service and not user:
+        click.echo("Error: give --user, or --service for a request that acts for no one", err=True)
+        sys.exit(2)
+    engine = AuthEngine(config, user_roles=_roles_option(roles))
     request = AuthRequest(
         agent=agent,
-        user=user,
+        user="" if service else user,
         action=action,
         resource=resource,
         scope=scope,
         target_agent=target_agent,
+        identity="service" if service else "on_behalf_of",
     )
     decision = engine.authorize(request)
 
@@ -142,6 +154,7 @@ def check(
             "reason": decision.reason,
             "requires_approval": decision.requires_approval,
             "approval_policy": decision.approval_policy,
+            "provenance": decision.provenance,
             "evaluation_time_ms": round(decision.evaluation_time_ms, 3),
         }
         click.echo(json.dumps(result, indent=2))
@@ -342,3 +355,58 @@ def audit(
             click.echo(json.dumps(entries, indent=2, default=str))
     else:
         print_audit_summary(entries)
+
+
+def _roles_option(roles: str) -> Callable[[str], list[str]]:
+    listed = [r.strip() for r in roles.split(",") if r.strip()]
+    return lambda _user: listed
+
+
+# ---------------------------------------------------------------------------
+# agent-auth preview
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.option("--agent", "-a", required=True, help="Agent name")
+@click.option("--user", "-u", default="", help="User the agent acts for")
+@click.option("--roles", default="", help="The user's roles, comma-separated")
+@click.option("--service", is_flag=True, help="Preview the agent acting as a service")
+@click.option("--output", "-o", type=click.Choice(["console", "json"]), default="console")
+@click.pass_context
+def preview(
+    ctx: click.Context, agent: str, user: str, roles: str, service: bool, output: str
+) -> None:
+    """Show everything an agent may do for a user (or as a service), and why."""
+    config_path = ctx.obj["config_path"]
+    try:
+        config = load_config(config_path)
+    except (FileNotFoundError, ConfigError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    if not service and not user:
+        click.echo("Error: give --user, or --service", err=True)
+        sys.exit(2)
+    if agent not in config.profiles:
+        click.echo(f"Error: no profile '{agent}' in {config_path}", err=True)
+        sys.exit(1)
+    engine = AuthEngine(config, user_roles=_roles_option(roles))
+    resolved = engine.preview(agent, engine.principal(user, service=service))
+    if output == "json":
+        click.echo(
+            json.dumps(
+                {
+                    "agent": resolved.agent,
+                    "principal": resolved.principal.describe(),
+                    "access": resolved.access,
+                    "access_reason": resolved.access_reason,
+                    "capabilities": resolved.capabilities,
+                    "denials": resolved.denials,
+                    "scopes": resolved.scopes,
+                    "fingerprint": resolved.fingerprint,
+                },
+                indent=2,
+            )
+        )
+        return
+    print_preview(resolved)

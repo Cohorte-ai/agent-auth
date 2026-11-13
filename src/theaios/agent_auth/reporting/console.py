@@ -6,6 +6,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from theaios.agent_auth.resolution import ResolvedAgent
 from theaios.agent_auth.types import AuthConfig, AuthDecision, DelegationGrant, Session
 
 console = Console()
@@ -146,6 +147,8 @@ def print_auth_result(decision: AuthDecision) -> None:
         console.print(f"  Reason: {escape(decision.reason)}")
     if decision.approval_policy:
         console.print(f"  Approval policy: {escape(decision.approval_policy)}")
+    if decision.provenance:
+        console.print(f"  Because: {escape(', '.join(decision.provenance))}")
     if decision.evaluation_time_ms > 0:
         console.print(f"  Evaluated in: {decision.evaluation_time_ms:.2f}ms")
     console.print()
@@ -267,3 +270,30 @@ def print_audit_summary(entries: list[dict[str, object]]) -> None:
         )
     console.print(table)
     console.print()
+
+
+def print_preview(resolved: ResolvedAgent) -> None:
+    """Everything an agent may do for a principal, with where each permission comes from."""
+    color = "green" if resolved.access else "red"
+    console.print(
+        f"\n[bold]{escape(resolved.agent)}[/bold] for {escape(resolved.principal.describe())}: "
+        f"[{color}]{'access' if resolved.access else 'no access'}[/{color}] "
+        f"({escape(resolved.access_reason)})"
+    )
+    if resolved.capabilities:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("May do")
+        table.add_column("Because")
+        for pattern, sources in sorted(resolved.capabilities.items()):
+            table.add_row(escape(pattern), escape(", ".join(sources)))
+        console.print(table)
+    if resolved.denials:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Never")
+        table.add_column("Because")
+        for pattern, sources in sorted(resolved.denials.items()):
+            table.add_row(escape(pattern), escape(", ".join(sources)))
+        console.print(table)
+    if resolved.scopes:
+        console.print(f"  Scopes: {escape(', '.join(resolved.scopes))}")
+    console.print(f"  Fingerprint: {resolved.fingerprint}\n")

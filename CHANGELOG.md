@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2026-11-13
+
+### Added
+
+- **Resolution** (`theaios.agent_auth.resolution`): what an agent may do for a principal, as a `ResolvedAgent` where every capability and denial carries its provenance (`baseline`, `grant:<role>`, `delegation:<id>`, `deny`, `limit`). `engine.resolve`, `engine.preview`, and `engine.explain(request)` (the decision without logging or recording). Every `AuthDecision` has `provenance`.
+- Per-profile `access` (which user roles or users may use the agent; `service` admits service requests) and `grants` (what the agent may additionally do for a user role). User roles come from `AuthEngine(..., user_roles=...)`.
+- **Limits in code**: `AuthEngine(..., limits={"*": ["payments:*"]})`. They apply after everything, including grants and delegations; no config can widen them.
+- **One identity per request**: `AuthRequest(identity="service")` for an agent acting for no one (baseline only, no grants or delegations); a service request with a user is refused.
+- **Sub-agents**: `engine.delegate(parent, child_agent)` returns the intersection of both resolutions, with the delegation chain.
+- **Tokens**: `engine.issue_token(resolved, audience, ttl)` and `engine.verify_token(token, audience)`, HMAC-SHA256 with a key you provide, short-lived (at most an hour), audience-bound, and refused when the agent's permissions changed since issue.
+- **Separation of duties**: `separation_of_duties: [{name, actions}]` prevents the same user from performing two of the listed actions on the same resource.
+- CLI: `agent-auth preview`; `check --roles`, `check --service`, and the provenance of each decision.
+- Docs: [Resolution](docs/resolution.md); design notes in `docs/design/resolution.md`.
+
+### Deprecated
+
+- `user_permissions_provider` union (an agent may do anything its user may do): emits a `DeprecationWarning` when it decides something. Use `grants`; set `resolution: {user_permissions: ignore}` to turn it off now. Removed in 1.0.
+- Approval tiers keep working; new code should prefer theaios-guardrails flow control proposals.
+
+### Compatibility
+
+Every 0.1 config loads and decides as before (all 0.1 tests pass unchanged); new keys are optional.
+
 ## [0.1.4] - 2026-11-11
 
 ### Security

@@ -117,6 +117,8 @@ Each agent profile is a named entry under `profiles:`.
 | `max_session_duration` | `int` | No | Max session duration in seconds. Default: `3600` |
 | `default_tier` | `string` | No | Default approval tier. Default: `"autonomous"` |
 | `description` | `string` | No | Human-readable description |
+| `access` | `list[string]` | No | Who may use the agent: user roles, user names, or `service`. Empty = everyone. (0.2) |
+| `grants` | `map[string, list[string]]` | No | What the agent may additionally do for a user holding a role (`{finance: [approve_invoice]}`). Keys are the user's roles from `user_roles`, not the `roles:` section. (0.2) |
 
 ```yaml
 profiles:
@@ -272,3 +274,21 @@ audit:
 ```
 
 Audit logs are written as one JSON object per line. Each entry includes the request, the decision, and a timestamp.
+
+---
+
+## `separation_of_duties` (0.2)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | `string` | Yes | Unique name, shown in denials |
+| `actions` | `list[string]` | Yes | At least two actions (or patterns); the same user may not perform two of them on the same resource |
+| `description` | `string` | No | Human-readable description |
+
+## `resolution` (0.2)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `user_permissions` | `string` | No | `union` (default, deprecated: the agent may also do anything the user-permissions provider grants the user) or `ignore` |
+
+See [Resolution](resolution.md).

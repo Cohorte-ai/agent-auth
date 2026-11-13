@@ -1,6 +1,6 @@
 # Design: agent-auth 0.2, resolution
 
-Status: draft for 0.2 (2026-11-11). Owner: maintainers.
+Status: implemented in 0.2.0 (2026-11-13). Owner: maintainers.
 
 ## Problem
 
@@ -14,6 +14,21 @@ the user's own permissions (`user_permissions_provider`) and A2A rules. Two cons
   do right now, and why?" without replaying the code.
 
 (A third, a delegation that applied to every user, was a bug and is fixed in 0.1.4.)
+
+## Threat model
+
+Protects against:
+- an agent doing more for a principal than the config, the user's roles, the user's own
+  delegations and the code limits allow;
+- identities mixing: one user's grants or delegations applying to another user, or to a
+  service request;
+- a sub-agent getting more than the agent that delegated to it;
+- a token used against another audience, after expiry, after tampering, or after the
+  permissions it stood for changed.
+
+Trusts (out of scope): the application code calling the engine (it can call tools directly);
+the `user_roles` function (it is the identity provider); the config file and the code limits;
+the secrecy of the token key; the clock. The engine decides; it does not authenticate users.
 
 ## The model
 
