@@ -8,6 +8,7 @@ Returns an AuthDecision for every request.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from dataclasses import dataclass
 import fnmatch
 import time
@@ -135,28 +136,39 @@ class AuthEngine:
         # Resolution (0.2): principal roles from the application, code-declared limits that no
         # config can widen, separation of duties, signed tokens.
         self._user_roles = user_roles
-        self._limits: dict[str, list[str]] = {
-            str(agent): [str(p) for p in patterns] for agent, patterns in (limits or {}).items()
-        }
+        self._limits = _check_limits(limits, config)
+        if token_key is not None:
+            tokens.check_key(token_key)
         self._token_key = token_key
         self._sod_done: dict[tuple[str, str, str], set[str]] = {}
-        self._warned_union = False
+        self._warned_union: set[tuple[str, str]] = set()
 
     @property
     def config(self) -> AuthConfig:
         """The loaded auth configuration."""
         return self._config
 
-    def authorize(self, request: AuthRequest) -> AuthDecision:
-        """Authorize a request: decide, log it, and record it for separation of duties."""
-        return self._authorize(request, record=True)
+    def authorize(
+        self, request: AuthRequest, *, resolved: ResolvedAgent | None = None
+    ) -> AuthDecision:
+        """Authorize a request: decide, log it, and record it for separation of duties.
 
-    def explain(self, request: AuthRequest) -> AuthDecision:
+        Pass ``resolved`` to decide against a given resolution instead of resolving afresh:
+        the attenuated resolution of a sub-agent (``delegate``), or the one a verified token
+        carries (``verify_token``). Approval tiers, scopes and separation of duties still
+        apply."""
+        return self._authorize(request, record=True, given=resolved)
+
+    def explain(
+        self, request: AuthRequest, *, resolved: ResolvedAgent | None = None
+    ) -> AuthDecision:
         """The decision ``authorize`` would make, with its provenance, without logging or
         recording anything."""
-        return self._authorize(request, record=False)
+        return self._authorize(request, record=False, given=resolved)
 
-    def _authorize(self, request: AuthRequest, *, record: bool) -> AuthDecision:
+    def _authorize(
+        self, request: AuthRequest, *, record: bool, given: ResolvedAgent | None = None
+    ) -> AuthDecision:
         """Authorize a request through the 8-step pipeline.
 
         Parameters
@@ -224,7 +236,24 @@ class AuthEngine:
                 record,
             )
         profile = self._profiles.get(request.agent)
-        resolved = self.resolve(request.agent, self._principal(request))
+        principal = self._principal(request)
+        if given is not None and (
+            given.agent != request.agent
+            or given.principal.identity != principal.identity
+            or given.principal.user != principal.user
+        ):
+            return self._done(
+                request,
+                AuthDecision(
+                    allowed=False,
+                    reason=f"The resolution passed is for '{given.agent}' acting for "
+                    f"{given.principal.describe()}, not for this request",
+                    evaluation_time_ms=(time.perf_counter() - start) * 1000,
+                    provenance=["access"],
+                ),
+                record,
+            )
+        resolved = given if given is not None else self.resolve(request.agent, principal)
 
         # Step 3: Access, denials (profile deny, code limits) and scope
         allowed, provenance = resolved.check(request.action)
@@ -233,14 +262,17 @@ class AuthEngine:
                 request,
                 AuthDecision(
                     allowed=False,
-                    reason=f"Access denied: {resolved.access_reason}",
+                    reason=f"Action '{request.action}' not authorized for agent "
+                    f"'{request.agent}': {resolved.access_reason}"
+                    if request.agent not in self._config.profiles
+                    else f"Access denied: {resolved.access_reason}",
                     evaluation_time_ms=(time.perf_counter() - start) * 1000,
                     provenance=["access"],
                 ),
                 record,
             )
         if provenance and not allowed:
-            source = provenance[0].split(":", 1)[0]
+            source = provenance[0].split(":", 1)[0].split("@")[0]
             if source == "limit":
                 reason = f"Action '{request.action}' is blocked by a limit set in code"
             else:
@@ -268,29 +300,11 @@ class AuthEngine:
                 record,
             )
 
-        # Steps 4-6: baseline, grants and the user's delegations (in the resolution); then the
-        # deprecated user-permissions union.
+        # Steps 4-6: baseline, grants, the user's delegations and the deprecated
+        # user-permissions union are all in the resolution.
         action_allowed = allowed
-        if (
-            not action_allowed
-            and self._user_provider is not None
-            and self._config.resolution.user_permissions == "union"
-            and request.identity == ON_BEHALF_OF
-        ):
-            user_actions = self._user_provider.get_user_actions(request.user)
-            if request.action in user_actions:
-                action_allowed = True
-                provenance = ["user_permissions"]
-                if not self._warned_union:
-                    self._warned_union = True
-                    warnings.warn(
-                        "agent-auth: an action was allowed only because the user may do it "
-                        "(user_permissions_provider union). Declare it in the agent's grants "
-                        "instead; set resolution.user_permissions: ignore to stop the union. "
-                        "The union is removed in 1.0.",
-                        DeprecationWarning,
-                        stacklevel=3,
-                    )
+        if action_allowed and {x.split(":", 1)[0] for x in provenance} == {"user_permissions"}:
+            self._warn_union(request)
         delegation_id = next(
             (x.split(":")[1] for x in provenance if x.startswith("delegation:")), None
         )
@@ -339,7 +353,8 @@ class AuthEngine:
         if not action_allowed:
             decision = AuthDecision(
                 allowed=False,
-                reason=f"Action '{request.action}' not authorized for agent '{request.agent}'",
+                reason=f"Action '{request.action}' not authorized for agent "
+                f"'{request.agent}'{self._grant_hint(request, principal)}",
                 evaluation_time_ms=(time.perf_counter() - start) * 1000,
             )
             return self._done(request, decision, record)
@@ -423,12 +438,17 @@ class AuthEngine:
         cfg = self._config.profiles.get(agent)
         profile = self._profiles.get(agent)
         delegations: list[tuple[str, list[str]]] = []
+        user_permissions: list[str] = []
         if not principal.is_service and principal.user:
             delegations = [
                 (g.delegation_id, list(g.actions))
                 for g in self._delegations.list_active(agent=agent)
-                if g.from_user == principal.user
+                if g.from_user == principal.user and self._delegation_still_valid(g)
             ]
+            if self._user_provider is not None and (
+                self._config.resolution.user_permissions == "union"
+            ):
+                user_permissions = sorted(self._user_provider.get_user_actions(principal.user))
         limits = [*self._limits.get("*", []), *self._limits.get(agent, [])]
         return resolve(
             agent,
@@ -441,6 +461,57 @@ class AuthEngine:
             limits=limits,
             scopes=profile.allowed_scopes if profile else [],
             default_tier=profile.default_tier if profile else "autonomous",
+            user_permissions=user_permissions,
+            known=agent in self._config.profiles,
+        )
+
+    def _delegation_still_valid(self, grant: DelegationGrant) -> bool:
+        """A delegation applies only while delegation is enabled and the *current* rules would
+        still accept it: disabling delegation or tightening a rule takes effect at once."""
+        try:
+            granted = datetime.fromisoformat(grant.granted_at)
+            expires = datetime.fromisoformat(grant.expires_at)
+            duration = int((expires - granted).total_seconds())
+        except (TypeError, ValueError):
+            return False
+        return not self._delegations.validate_rule(list(grant.actions), duration, grant.reason)
+
+    def _warn_union(self, request: AuthRequest) -> None:
+        key = (request.agent, request.action)
+        if key in self._warned_union:
+            return
+        self._warned_union.add(key)
+        warnings.warn(
+            f"agent-auth: '{request.agent}' was allowed '{request.action}' for "
+            f"'{request.user}' only because the user may do it (user_permissions_provider "
+            "union, deprecated). Add it to the agent's grants for that user's role, or set "
+            "resolution.user_permissions: ignore. The union is removed in 1.0.",
+            FutureWarning,
+            stacklevel=4,
+        )
+
+    def _grant_hint(self, request: AuthRequest, principal: Principal) -> str:
+        """Why a grant did not apply, when that is the likely mistake."""
+        cfg = self._config.profiles.get(request.agent)
+        if principal.is_service or cfg is None:
+            return ""
+        roles = [
+            r
+            for r, actions in cfg.grants.items()
+            if any(fnmatch.fnmatchcase(request.action, a) for a in actions)
+        ]
+        if not roles:
+            return ""
+        if not principal.roles:
+            source = (
+                "no user_roles was given to the engine"
+                if self._user_roles is None
+                else ("user_roles returned none")
+            )
+            return f" (granted to roles {', '.join(sorted(roles))}; '{request.user}' has no roles: {source})"
+        return (
+            f" (granted to roles {', '.join(sorted(roles))}; '{request.user}' has "
+            f"{', '.join(sorted(principal.roles))})"
         )
 
     def preview(self, agent: str, principal: Principal) -> ResolvedAgent:
@@ -551,6 +622,27 @@ class AuthEngine:
         """Write an audit log entry if auditing is enabled."""
         if self._audit is not None:
             self._audit.write(request, decision, self._config)
+
+
+def _check_limits(
+    limits: Mapping[str, Iterable[str]] | None, config: AuthConfig
+) -> dict[str, list[str]]:
+    """Limits are the last line of defence: a typo must fail loudly, never disable them."""
+    if limits is None:
+        return {}
+    if not isinstance(limits, Mapping):
+        raise TypeError("limits must be a mapping of agent name (or '*') to deny patterns")
+    out: dict[str, list[str]] = {}
+    for agent, patterns in limits.items():
+        if agent != "*" and agent not in config.profiles:
+            raise ValueError(
+                f"limits name agent '{agent}', which has no profile in the config "
+                f"(agents: {', '.join(sorted(config.profiles)) or 'none'}; '*' means all)"
+            )
+        if isinstance(patterns, (str, bytes)) or not all(isinstance(p, str) for p in patterns):
+            raise TypeError(f"limits['{agent}'] must be a list of patterns, not {patterns!r}")
+        out[str(agent)] = list(patterns)
+    return out
 
 
 @dataclass(frozen=True)

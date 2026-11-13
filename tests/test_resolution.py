@@ -144,9 +144,9 @@ def test_identities_are_never_mixed(tmp_path: Path) -> None:
 def test_user_permissions_union_is_deprecated_and_can_be_turned_off(tmp_path: Path) -> None:
     provider = {"alice": {"delete_db"}}
     e = _engine(tmp_path, user_permissions_provider=lambda u: provider.get(u, set()))
-    with pytest.warns(DeprecationWarning, match="grants"):
+    with pytest.warns(FutureWarning, match="'assistant' was allowed 'delete_db' for 'alice'"):
         d = e.authorize(_req("alice", "delete_db"))
-    assert d.allowed and d.provenance == ["user_permissions"]
+    assert d.allowed and d.provenance == ["user_permissions:delete_db"]
     strict = _engine(
         tmp_path,
         "resolution:\n  user_permissions: ignore\n",

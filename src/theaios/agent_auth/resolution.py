@@ -170,11 +170,18 @@ def resolve(
     limits: Iterable[str] = (),
     scopes: Iterable[str] = (),
     default_tier: str = "autonomous",
+    user_permissions: Iterable[str] = (),
+    known: bool = True,
 ) -> ResolvedAgent:
     """Build the ResolvedAgent. ``delegations`` are ``(delegation_id, actions)`` pairs already
     filtered to this agent and this user."""
     allowed_by = list(access)
-    if not allowed_by:
+    user_permissions = list(user_permissions)
+    if not known and not (user_permissions and not principal.is_service):
+        ok, why = False, f"no profile '{agent}' in the config"
+    elif not known:  # 0.1 compatibility: the deprecated union can serve unprofiled agents
+        ok, why = True, f"no profile '{agent}': only the deprecated user-permissions union"
+    elif not allowed_by:
         ok, why = True, "open to everyone"
     elif principal.is_service:
         ok = SERVICE in allowed_by
@@ -205,6 +212,8 @@ def resolve(
             for delegation_id, actions in delegations:
                 for action in actions:
                     add(action, f"delegation:{delegation_id}")
+            for action in user_permissions:  # deprecated 0.1 union
+                add(action, "user_permissions")
 
     denials: dict[str, list[str]] = {}
     for pattern in deny:
