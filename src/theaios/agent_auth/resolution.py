@@ -13,8 +13,10 @@ docs/design/resolution.md.
 from __future__ import annotations
 
 import fnmatch
+import functools
 import hashlib
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 
@@ -48,13 +50,19 @@ def covers(outer: str, inner: str) -> bool:
 def denial_matches(action: str, pattern: str) -> bool:
     """Denials and limits match regardless of case: ``DELETE_users`` is still a ``delete_*``.
 
-    Tried as written, case-folded, lower-cased and upper-cased: one reading alone would let
-    ``db:drop_ß`` (folded to two characters) or ``DB:DROP_ß`` escape ``db:drop_?``, and
-    ``cfg:ADMIN`` escape ``cfg:[!a-z]*``."""
+    Tried as written, case-folded, lower-cased, upper-cased, and character by character
+    ignoring case (``re.IGNORECASE``, simple case mapping: ``İ`` is ``i``). Each reading alone
+    misses some spelling: ``db:drop_ß`` (folded to two characters), ``DB:DROP_ß`` or
+    ``DB:DROP_ßİ`` against ``db:drop_?``/``db:drop_??``, ``cfg:ADMIN`` against ``cfg:[!a-z]*``."""
     return any(
         fnmatch.fnmatchcase(fold(action), fold(pattern))
         for fold in (str, str.casefold, str.lower, str.upper)
-    )
+    ) or bool(_ignorecase(pattern).fullmatch(action))
+
+
+@functools.lru_cache(maxsize=1024)
+def _ignorecase(pattern: str) -> re.Pattern[str]:
+    return re.compile(fnmatch.translate(pattern), re.IGNORECASE)
 
 
 ON_BEHALF_OF = "on_behalf_of"

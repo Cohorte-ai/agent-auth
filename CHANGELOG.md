@@ -82,6 +82,8 @@ A last re-verification confirmed those against a brute-force reference (80,000 r
 - `DB:DROP_ß` still escaped `db:drop_?` (neither the written nor the folded reading matched): deny patterns now also try the lower- and upper-cased action; a test checks every cased Unicode character.
 - A restriction whose condition raises an error as written now always applies (fail closed); long `and`/`or` chains no longer exhaust the recursion limit when the engine is built.
 
+A final round found the same gap with two special characters together (`DB:DROP_ßİ` escaped `db:drop_??`). Deny patterns also match character by character ignoring case (`re.IGNORECASE`), which closes the class (no inconsistency in 300,000 random combinations of every cased character) and makes `İ` an `i` (`DB:DROP_İNDEX` is a `db:drop_index`). Long chains inside a single comparison no longer exhaust the recursion limit.
+
 ### Deprecated
 
 - `user_permissions_provider` union (an agent may do anything its user may do): emits a `FutureWarning` naming the agent, action and user the first time it decides each (agent, action) pair. Use `grants`; set `resolution: {user_permissions: ignore}` to turn it off now. Removed in 1.0.

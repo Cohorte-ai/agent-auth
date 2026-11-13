@@ -47,11 +47,22 @@ def fold_value(value: object, _depth: int = 0) -> object:
 
 def fold_ast(node: ASTNode) -> ASTNode:
     """A copy of ``node`` with its string literals casefolded. Field names, variable names and
-    the matcher name of ``matches`` are left alone (they are names, not values)."""
+    the matcher name of ``matches`` are left alone (they are names, not values). and/or chains
+    are rebuilt iteratively, so a long chain cannot exhaust the recursion limit."""
     if isinstance(node, StringLiteral):
         return StringLiteral(node.value.casefold())
     if isinstance(node, ListLiteral):
         return ListLiteral(tuple(fold_ast(i) for i in node.items))  # type: ignore[arg-type]
+    if isinstance(node, BinaryOp) and node.op in ("and", "or"):
+        rights: list[object] = []
+        spine: object = node
+        while isinstance(spine, BinaryOp) and spine.op == node.op:
+            rights.append(spine.right)
+            spine = spine.left
+        folded = fold_ast(spine)  # type: ignore[arg-type]
+        for right in reversed(rights):
+            folded = BinaryOp(node.op, folded, fold_ast(right))  # type: ignore[arg-type]
+        return folded
     if isinstance(node, BinaryOp):
         right = node.right if node.op == "matches" else fold_ast(node.right)  # type: ignore[arg-type]
         return BinaryOp(node.op, fold_ast(node.left), right)  # type: ignore[arg-type]

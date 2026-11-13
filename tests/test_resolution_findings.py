@@ -938,3 +938,32 @@ def test_long_restriction_chains_build_and_decide(tmp_path: Path) -> None:
     )
     assert e.explain(_req("", "a", agent="intern-bot", metadata={"x": 1})).tier == "soft"
     assert e.explain(_req("", "a", agent="intern-bot", metadata={"x": 2})).tier == "autonomous"
+
+
+# --- Re-verification at 7df69a9 ------------------------------------------------------------
+
+
+def test_combined_special_characters_cannot_flip_a_denial() -> None:
+    import itertools
+
+    from theaios.agent_auth.resolution import denial_matches
+
+    specials = ["ß", "İ", "ῌ", "Ѳ", "ς", "ẞ", "a"]
+    for n in (1, 2, 3):
+        for chars in itertools.product(specials, repeat=n):
+            tail = "".join(chars)
+            for pattern in (f"db:drop_{'?' * n}", f"DB:DROP_{'?' * n}"):
+                verdicts = {
+                    denial_matches(prefix + tail, pattern)
+                    for prefix in ("db:drop_", "DB:DROP_", "Db:Drop_")
+                }
+                assert verdicts == {True}, (tail, pattern, verdicts)
+    assert denial_matches("DB:DROP_İNDEX", "db:drop_index")  # İ is an i
+
+
+def test_a_long_chain_inside_a_comparison_is_decided(tmp_path: Path) -> None:
+    chain = " or ".join(["x==1"] * 1100)
+    cond = f'({chain} or action=="pay") == true'
+    e = _engine(tmp_path, f"approval_policies:\n  - {{name: c, condition: '{cond}', tier: soft}}\n")
+    assert e.explain(_req("", "read", agent="intern-bot", metadata={"x": 2})).tier == "autonomous"
+    assert e.explain(_req("", "PAY", agent="intern-bot", metadata={"x": 2})).tier == "soft"

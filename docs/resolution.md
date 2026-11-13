@@ -94,7 +94,8 @@ Denials, limits, approval conditions and A2A deny policies (patterns and conditi
 **regardless of case** (`payments:*` blocks `PAYMENTS:transfer`; an approval on `db:delete`
 covers `db:DELETE`, for the agent and for its sub-agents; see
 [expressions](expressions.md#case) for conditions); a deny pattern matches the action as
-written, case-folded, lower-cased or upper-cased. Avoid negated classes (`[!a-z]`) in deny
+written, case-folded, lower-cased, upper-cased or character by character ignoring case (so
+`İ` counts as `i`). Avoid negated classes (`[!a-z]`) in deny
 patterns: what they exclude depends on case. Capabilities, grants, delegations, scopes and allow policies match exactly. Use one
 spelling for your actions. An action that is empty or surrounded by spaces, or containing
 control, invisible or look-alike (non-NFKC) characters, or a character whose upper case folds
