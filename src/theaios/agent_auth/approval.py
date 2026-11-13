@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from theaios.agent_auth.expressions import (
-    ASTNode,
     ExpressionError,
     compile_expression,
-    evaluate as eval_expr,
 )
+from theaios.agent_auth.casefold import Restriction, fold_context
 from theaios.agent_auth.config import condition_errors
 from theaios.agent_auth.types import TIER_ORDER, ApprovalPolicyConfig
 
@@ -24,7 +23,7 @@ class ApprovalEvaluator:
         policies: list[ApprovalPolicyConfig],
         variables: dict[str, object] | None = None,
     ) -> None:
-        self._policies: list[tuple[ApprovalPolicyConfig, ASTNode]] = []
+        self._policies: list[tuple[ApprovalPolicyConfig, Restriction]] = []
         self._variables = variables or {}
 
         for policy in policies:
@@ -39,7 +38,7 @@ class ApprovalEvaluator:
                 raise ExpressionError(
                     f"Error in approval policy '{policy.name}': {'; '.join(problems)}"
                 )
-            self._policies.append((policy, ast))
+            self._policies.append((policy, Restriction(ast, self._variables)))
 
     def evaluate(
         self,
@@ -76,19 +75,17 @@ class ApprovalEvaluator:
         evaluated, the error (the policy then applies: fail closed)."""
         eval_context: dict[str, object] = dict(context)
         eval_context["action"] = action
+        # Conditions apply regardless of case (see casefold.py).
+        folded_context = fold_context(eval_context)
 
         most_restrictive = default_tier
         deciding = ""
         deciding_error: str | None = None
 
-        for policy, ast in self._policies:
+        for policy, restriction in self._policies:
             error: str | None = None
             try:
-                result = eval_expr(
-                    ast,
-                    context=eval_context,
-                    variables=self._variables,
-                )
+                result = restriction.holds(eval_context, folded_context)
             except ExpressionError as exc:
                 # Fail closed: a policy that cannot be evaluated applies its tier. Skipping it
                 # would let an action that needs approval run autonomously.

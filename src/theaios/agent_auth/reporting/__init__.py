@@ -7,6 +7,7 @@ from theaios.agent_auth.reporting.console import (
     print_auth_result,
     print_config_summary,
     print_delegations_list,
+    print_preview,
     print_sessions_list,
 )
 from theaios.agent_auth.reporting.json_export import export_audit_json
@@ -17,5 +18,6 @@ __all__ = [
     "print_sessions_list",
     "print_delegations_list",
     "print_audit_summary",
+    "print_preview",
     "export_audit_json",
 ]

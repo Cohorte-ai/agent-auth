@@ -2,6 +2,12 @@
 
 The three-tier approval model gives agents clear guidance on when to act and when to ask.
 
+!!! note "For new code"
+    Approval tiers keep working. For new integrations, prefer
+    [theaios-guardrails flow control](https://github.com/Cohorte-ai/guardrails/blob/main/docs/flow-control.md):
+    a blocked call becomes a proposal frozen to its exact arguments, decided once by a person
+    and executed once by code.
+
 ---
 
 ## The three tiers

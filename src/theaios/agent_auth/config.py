@@ -5,12 +5,15 @@ from __future__ import annotations
 import difflib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Any
 
 import yaml
 from theaios.core.expressions import ExpressionError, compile_expression, references
 from theaios.core.env import interpolate_env, interpolate_recursive
 
 from theaios.agent_auth.types import (
+    ResolutionConfig,
+    SeparationOfDutiesConfig,
     VALID_A2A_DEFAULTS,
     VALID_TIERS,
     A2AConfig,
@@ -45,6 +48,33 @@ def _interpolate_recursive(obj: object) -> object:
     return interpolate_recursive(obj)
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that refuses duplicate keys: YAML keeps the last one silently, so a merge
+    conflict could drop a profile's deny list or empty separation_of_duties."""
+
+
+def _construct_unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    seen: dict[Any, int] = {}
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=True)  # type: ignore[no-untyped-call, unused-ignore]
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                None,
+                None,
+                f"duplicate key '{key}' (first at line {seen[key] + 1}); YAML would keep only "
+                "the last one",
+                key_node.start_mark,
+            )
+        seen[key] = key_node.start_mark.line
+    return dict(loader.construct_pairs(node, deep=True))  # type: ignore[no-untyped-call, unused-ignore]
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
 def load_config(path: str = "agent_auth.yaml") -> AuthConfig:
     """Load a YAML auth config file, validate, and return typed config."""
     config_path = Path(path)
@@ -55,7 +85,7 @@ def load_config(path: str = "agent_auth.yaml") -> AuthConfig:
         raise ConfigError([f"{path} is not a file"])
     try:
         with open(config_path, encoding="utf-8") as f:
-            raw = yaml.safe_load(f)
+            raw = yaml.load(f, Loader=_UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
     except yaml.YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
         where = f"{path}:{mark.line + 1}" if mark is not None else path
@@ -148,6 +178,16 @@ def _parse_config(raw: dict[str, object]) -> AuthConfig:
                 max_session_duration=int(praw.get("max_session_duration", 3600)),
                 default_tier=str(praw.get("default_tier", "autonomous")),
                 description=str(praw.get("description", "")),
+                access=[str(a) for a in praw.get("access", []) or []]
+                if isinstance(praw.get("access", []), list)
+                else [],
+                grants={
+                    str(role): [str(a) for a in actions]
+                    for role, actions in (praw.get("grants") or {}).items()
+                    if isinstance(actions, list)
+                }
+                if isinstance(praw.get("grants") or {}, dict)
+                else {},
             )
 
     # Approval policies
@@ -185,6 +225,7 @@ def _parse_config(raw: dict[str, object]) -> AuthConfig:
                     max_duration=int(drule.get("max_duration", 86400)),
                     require_reason=bool(drule.get("require_reason", False)),
                     description=str(drule.get("description", "")),
+                    roles=[str(r) for r in _as_list(drule.get("roles"))],
                 )
             )
     delegation = DelegationConfig(
@@ -251,7 +292,27 @@ def _parse_config(raw: dict[str, object]) -> AuthConfig:
         a2a=a2a,
         sessions=sessions,
         audit=audit,
+        separation_of_duties=[
+            SeparationOfDutiesConfig(
+                name=str(r.get("name", "")),
+                actions=[str(a) for a in r.get("actions", []) or []],
+                description=str(r.get("description", "")),
+            )
+            for r in _as_list(raw.get("separation_of_duties"))
+            if isinstance(r, dict)
+        ],
+        resolution=ResolutionConfig(
+            user_permissions=str(_as_dict(raw.get("resolution")).get("user_permissions", "union"))
+        ),
     )
+
+
+def _as_list(value: object) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _as_dict(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 # Every key the parser reads, per place in the file. Anything else is a typo or a key from
@@ -273,8 +334,23 @@ _TOP_KEYS = {
     "a2a",
     "sessions",
     "audit",
+    "separation_of_duties",
+    "resolution",
 }
-_MAPPINGS = ("metadata", "variables", "roles", "profiles", "delegation", "a2a", "sessions", "audit")
+_MAPPINGS = (
+    "metadata",
+    "variables",
+    "roles",
+    "profiles",
+    "delegation",
+    "a2a",
+    "sessions",
+    "audit",
+    "resolution",
+)
+_GRANTS = "a mapping of principal roles to lists of actions"
+_SOD = {"name": _STR, "actions": _STRLIST, "description": _STR}
+_RESOLUTION = {"user_permissions": _STR}
 _ROLE = {"actions": _STRLIST, "extends": _STR, "description": _STR}
 _PROFILE = {
     "role": _STR,
@@ -284,6 +360,8 @@ _PROFILE = {
     "max_session_duration": _INT,
     "default_tier": _STR,
     "description": _STR,
+    "access": _STRLIST,
+    "grants": _GRANTS,
 }
 _APPROVAL = {"name": _STR, "condition": _STR, "tier": _STR, "description": _STR}
 _DELEGATION = {"enabled": _BOOL, "default_duration": _INT, "max_duration": _INT, "rules": None}
@@ -292,6 +370,7 @@ _DELEGATION_RULE = {
     "allowed_actions": _STRLIST,
     "max_duration": _INT,
     "require_reason": _BOOL,
+    "roles": _STRLIST,
     "description": _STR,
 }
 _A2A = {"default": _STR, "policies": None}
@@ -315,6 +394,11 @@ def _type_ok(value: object, kind: str) -> bool:
         return isinstance(value, int) and not isinstance(value, bool)
     if kind == _BOOL:
         return isinstance(value, bool)
+    if kind == _GRANTS:
+        return isinstance(value, dict) and all(
+            isinstance(k, str) and isinstance(v, list) and all(isinstance(x, str) for x in v)
+            for k, v in value.items()
+        )
     return isinstance(value, list) and all(isinstance(x, str) for x in value)
 
 
@@ -328,7 +412,14 @@ def _check_mapping(where: str, raw: object, spec: Mapping[str, str | None]) -> l
             continue
         kind = spec[key]
         if kind is not None and value is not None and not _type_ok(value, kind):
-            errors.append(f"{where}: '{key}' must be {kind}, got {type(value).__name__}")
+            if kind == _GRANTS and isinstance(value, dict):
+                bad = [str(k) for k, v in value.items() if not isinstance(v, list)]
+                errors.append(
+                    f"{where}: grants for {', '.join(repr(b) for b in bad) or 'a role'} must be "
+                    "a list of actions (e.g. finance: [approve_invoice])"
+                )
+            else:
+                errors.append(f"{where}: '{key}' must be {kind}, got {type(value).__name__}")
     return errors
 
 
@@ -375,6 +466,9 @@ def shape_errors(raw: dict[object, object]) -> list[str]:
         errors += _check_mapping("sessions", raw["sessions"], _SESSIONS)
     if isinstance(raw.get("audit"), dict):
         errors += _check_mapping("audit", raw["audit"], _AUDIT)
+    errors += _check_list("separation_of_duties", raw.get("separation_of_duties"), _SOD)
+    if isinstance(raw.get("resolution"), dict):
+        errors += _check_mapping("resolution", raw["resolution"], _RESOLUTION)
     return errors
 
 
@@ -519,6 +613,34 @@ def validate_config(config: AuthConfig) -> list[str]:
                 f"{prefix} ({rule.name}): max_duration ({rule.max_duration}) "
                 f"exceeds delegation.max_duration ({config.delegation.max_duration})"
             )
+
+    # Resolution (0.2)
+    if config.resolution.user_permissions not in ("union", "ignore"):
+        errors.append(
+            f"resolution.user_permissions: invalid value '{config.resolution.user_permissions}',"
+            " expected 'union' or 'ignore'"
+        )
+    seen_sod: set[str] = set()
+    for i, sod in enumerate(config.separation_of_duties):
+        prefix = f"separation_of_duties[{i}]"
+        if not sod.name:
+            errors.append(f"{prefix}: 'name' is required")
+        elif sod.name in seen_sod:
+            errors.append(f"{prefix}: duplicate name '{sod.name}'")
+        else:
+            seen_sod.add(sod.name)
+        if len({a.casefold() for a in sod.actions}) != len(sod.actions):
+            errors.append(f"{prefix} ({sod.name}): an action is listed twice")
+        elif len(sod.actions) < 2:
+            errors.append(f"{prefix} ({sod.name}): 'actions' needs at least two different actions")
+    for name, profile in config.profiles.items():
+        for grant_role, actions in profile.grants.items():
+            if not grant_role.strip():
+                errors.append(f"profiles.{name}.grants: a role name is empty")
+            if not actions:
+                errors.append(f"profiles.{name}.grants.{grant_role}: no actions")
+        if any(not a.strip() for a in profile.access):
+            errors.append(f"profiles.{name}.access: an entry is empty")
 
     # A2A — valid default, unique policy names, valid effects
     if config.a2a.default not in VALID_A2A_DEFAULTS:

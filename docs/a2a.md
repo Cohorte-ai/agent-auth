@@ -98,6 +98,13 @@ Conditions use the safe expression language. Available variables:
 | `action` | `str` | The requested action |
 | `from_agent` | `str` | Source agent name |
 | `to_agent` | `str` | Target agent name |
+| `user`, `resource`, `scope`, `identity` | `str` | The request's own fields (0.2; metadata cannot override them) |
+| `agent` | `str` | The agent making the request (in a sub-agent chain, the last one: use `from_agent`/`to_agent` for the hop) |
+| `metadata.<key>` | any | Request metadata |
+
+Deny policies match agents and the action regardless of case (a pattern matches the name as
+written or case-folded), and their conditions too (see
+[expressions](expressions.md#case)). Allow policies match exactly.
 
 ```yaml
 policies:
@@ -139,4 +146,7 @@ request = AuthRequest(
 decision = engine.authorize(request)
 ```
 
-If `target_agent` is `None`, the A2A check is skipped entirely.
+If `target_agent` is `None`, there is no agent-to-agent call to check, except for a sub-agent
+(0.2): a request decided with `authorize(..., resolved=engine.delegate(...))` is checked against
+the A2A policies for every hop of its chain, and `engine.delegate` gives no access unless the
+policies let the parent reach the child. See [Resolution](resolution.md).

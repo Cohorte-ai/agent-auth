@@ -31,11 +31,15 @@ When AI agents operate in your enterprise, the authorization question changes fr
 
 ## Features
 
+- **Resolution with provenance (0.2)** — what an agent may do for a given user, and why: baseline, grants per user role, delegations, denials, and limits set in code that no config can widen. `preview` it, `explain` any decision. See [Resolution](docs/resolution.md)
+- **One identity per request (0.2)** — an agent acts for a user or as a service, never a silent mix of both
+- **Sub-agents and tokens (0.2)** — delegation by attenuation (a sub-agent never gets more than its parent) and short-lived, audience-bound tokens for tool servers
+- **Separation of duties (0.2)** — the same user cannot create and approve the same payment
 - **Roles with inheritance** — define hierarchical permission sets via `extends`
 - **Agent profiles** — assign roles, allow/deny specific actions, scope to resource patterns
 - **Three-tier approval** — autonomous / soft / strong
 - **Sessions** — time-limited, scope-bound authorization contexts (UUID4 IDs)
-- **Delegation** — temporary permission grants from users to agents
+- **Delegation** — temporary permission grants from a user to an agent, for that user's requests only
 - **Agent-to-agent (A2A)** — control which agents can invoke which
 - **Audit logging** — every decision recorded in JSONL
 - **Safe expression language** — custom DSL for policy conditions (no `eval()`)
@@ -144,6 +148,8 @@ Full documentation: [cohorte-ai.github.io/agent-auth](https://cohorte-ai.github.
 | Topic | Link |
 |---|---|
 | Concepts | [concepts](https://cohorte-ai.github.io/agent-auth/concepts/) |
+| Resolution (0.2) | [resolution](https://cohorte-ai.github.io/agent-auth/resolution/) |
+| Delegation | [delegation](https://cohorte-ai.github.io/agent-auth/delegation/) |
 | Config syntax | [config-syntax](https://cohorte-ai.github.io/agent-auth/config-syntax/) |
 | CLI reference | [cli](https://cohorte-ai.github.io/agent-auth/cli/) |
 | API reference | [api-reference](https://cohorte-ai.github.io/agent-auth/api-reference/) |

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from theaios.agent_auth.config import ConfigError
 from theaios.agent_auth.roles import resolve_role
+from theaios.agent_auth.resolution import denial_matches
 from theaios.agent_auth.types import AgentProfileConfig, RoleConfig
 
 
@@ -76,12 +77,12 @@ def check_action(
     """
     # Check deny first (deny takes precedence)
     for pattern in profile.denied_actions:
-        if fnmatch.fnmatch(action, pattern):
+        if denial_matches(action, pattern):
             return "deny"
 
     # Check allow
     for pattern in profile.effective_actions:
-        if fnmatch.fnmatch(action, pattern):
+        if fnmatch.fnmatchcase(action, pattern):
             return "allow"
 
     return None
@@ -100,7 +101,7 @@ def check_scope(
         return True
 
     for pattern in profile.allowed_scopes:
-        if fnmatch.fnmatch(scope, pattern):
+        if fnmatch.fnmatchcase(scope, pattern):
             return True
 
     return False

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import fnmatch
 import json
+from collections.abc import Iterable
 import logging
 import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from theaios.agent_auth.types import DelegationConfig, DelegationGrant
+from theaios.agent_auth.types import DelegationRuleConfig, DelegationConfig, DelegationGrant
 
 _logger = logging.getLogger(__name__)
 
@@ -31,10 +32,27 @@ class DelegationManager:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._grants: dict[str, DelegationGrant] = {}
+        self._stamp: tuple[int, int] | None = None
         self._load()
+
+    def _file_stamp(self) -> tuple[int, int] | None:
+        try:
+            st = self._path.stat()
+        except OSError:
+            return None
+        return (st.st_ino, st.st_mtime_ns)
+
+    def _fresh(self) -> None:
+        """Reload when another process (another engine, the CLI) replaced the file, so a
+        revocation there takes effect here."""
+        stamp = self._file_stamp()
+        if stamp != self._stamp:
+            self._grants.clear()
+            self._load()
 
     def _load(self) -> None:
         """Load delegation grants from JSONL file."""
+        self._stamp = self._file_stamp()
         if not self._path.exists():
             return
 
@@ -85,46 +103,65 @@ class DelegationManager:
                 f.write(json.dumps(entry, default=str) + "\n")
             temp_path = Path(f.name)
         temp_path.replace(self._path)
+        self._stamp = self._file_stamp()
 
-    def validate_rule(self, actions: list[str], duration: int, reason: str) -> list[str]:
-        """Validate a delegation request against configured rules.
+    def validate_rule(
+        self,
+        actions: list[str],
+        duration: int,
+        reason: str,
+        roles: Iterable[str] | None = None,
+    ) -> list[str]:
+        """Validate a delegation against the configured rules (empty list = valid).
 
-        Returns a list of validation errors (empty = valid).
-        """
+        Rules without ``roles`` apply to everyone, all of them (as in 0.1). Rules with
+        ``roles`` say who may delegate: when there are any, the delegating user must hold a
+        role of at least one of them that allows every action. ``roles`` is the delegating
+        user's roles (``None``: unknown, so role rules cannot be satisfied). Action patterns are
+        compared without reading wildcards as text: a rule allowing ``read:[!s]*`` does not
+        accept a delegation of ``read:*``."""
+        from theaios.agent_auth.resolution import covers
+
         errors: list[str] = []
-
         if not self._config.enabled:
-            errors.append("Delegation is disabled")
-            return errors
-
+            return ["Delegation is disabled"]
         if duration > self._config.max_duration:
             errors.append(
                 f"Duration ({duration}s) exceeds max_duration ({self._config.max_duration}s)"
             )
 
-        # Check against delegation rules
-        for rule in self._config.rules:
+        def check(rule: DelegationRuleConfig) -> list[str]:
+            out: list[str] = []
             if rule.allowed_actions:
                 for action in actions:
-                    matched = False
-                    for allowed in rule.allowed_actions:
-                        if fnmatch.fnmatch(action, allowed):
-                            matched = True
-                            break
-                    if not matched:
-                        errors.append(
+                    if not any(covers(allowed, action) for allowed in rule.allowed_actions):
+                        out.append(
                             f"Action '{action}' not allowed by delegation rule '{rule.name}'"
                         )
-
             if duration > rule.max_duration:
-                errors.append(
+                out.append(
                     f"Duration ({duration}s) exceeds rule '{rule.name}' "
                     f"max_duration ({rule.max_duration}s)"
                 )
-
             if rule.require_reason and not reason:
-                errors.append(f"Delegation rule '{rule.name}' requires a reason")
+                out.append(f"Delegation rule '{rule.name}' requires a reason")
+            return out
 
+        for rule in self._config.rules:
+            if not rule.roles:
+                errors += check(rule)
+        role_rules = [r for r in self._config.rules if r.roles]
+        if role_rules:
+            held = set(roles or ())
+            mine = [r for r in role_rules if held & set(r.roles)]
+            if not mine:
+                errors.append(
+                    "No delegation rule lets "
+                    + (f"roles {', '.join(sorted(held))}" if held else "a user without roles")
+                    + " delegate"
+                )
+            elif all(check(r) for r in mine):
+                errors += check(mine[0])
         return errors
 
     def create(
@@ -134,8 +171,10 @@ class DelegationManager:
         actions: list[str],
         duration: int | None = None,
         reason: str = "",
+        roles: Iterable[str] | None = None,
     ) -> DelegationGrant:
-        """Create a new delegation grant.
+        """Create a new delegation grant (``roles``: the delegating user's roles, for rules
+        that say who may delegate).
 
         Parameters
         ----------
@@ -160,10 +199,11 @@ class DelegationManager:
         ValueError
             If the delegation violates configured rules.
         """
+        self._fresh()
         effective_duration = duration if duration is not None else self._config.default_duration
 
         # Validate against rules
-        errors = self.validate_rule(actions, effective_duration, reason)
+        errors = self.validate_rule(actions, effective_duration, reason, roles)
         if errors:
             raise ValueError("Delegation validation failed:\n  " + "\n  ".join(errors))
 
@@ -189,6 +229,7 @@ class DelegationManager:
         applies when the agent acts for that user, never for someone else. The engine always
         passes it. Returns the matching delegation grant or None.
         """
+        self._fresh()
         now = datetime.now(timezone.utc)
 
         for grant in self._grants.values():
@@ -212,13 +253,14 @@ class DelegationManager:
 
             # Check if action matches
             for delegated_action in grant.actions:
-                if fnmatch.fnmatch(action, delegated_action):
+                if fnmatch.fnmatchcase(action, delegated_action):
                     return grant
 
         return None
 
     def revoke(self, delegation_id: str) -> bool:
         """Revoke a delegation grant. Returns True if revoked, False if not found."""
+        self._fresh()
         grant = self._grants.get(delegation_id)
         if grant is None:
             return False
@@ -232,6 +274,7 @@ class DelegationManager:
 
     def list_active(self, agent: str | None = None) -> list[DelegationGrant]:
         """List active delegation grants, optionally filtered by agent."""
+        self._fresh()
         results: list[DelegationGrant] = []
         now = datetime.now(timezone.utc)
 
@@ -262,6 +305,7 @@ class DelegationManager:
 
         Returns the number of grants expired.
         """
+        self._fresh()
         now = datetime.now(timezone.utc)
         count = 0
 

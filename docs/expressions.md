@@ -104,6 +104,8 @@ Available context fields depend on where the expression is used:
 | `agent` | `str` | The agent name |
 | `user` | `str` | The user name |
 | `scope` | `str` | The scope |
+| `identity` | `str` | `on_behalf_of` or `service` |
+| `metadata.<key>` | any | Request metadata (also reachable as `<key>`; the request's own fields always win) |
 
 ### A2A rule conditions
 
@@ -112,6 +114,24 @@ Available context fields depend on where the expression is used:
 | `action` | `str` | The requested action |
 | `from_agent` | `str` | Source agent name |
 | `to_agent` | `str` | Target agent name |
+| `user`, `resource`, `scope`, `identity`, `agent` | `str` | The request's fields (0.2; metadata cannot override them) |
+| `metadata.<key>` | any | Request metadata |
+
+A2A **deny** policies match the action regardless of case; allow policies match it exactly.
+
+### Case
+
+A restriction's condition (approval policies, A2A deny policies) applies if **some reading**
+of it matches, where each comparison may be read as written or with every string case-folded on
+both sides (the request's values, the condition's literals, the config's variables). Under
+`not`, a comparison counts only if it holds in both readings. So:
+
+- `action == "deleteUser"` also covers `DELETEUSER`; `resource == "prod"` covers `PROD`.
+- `action == "db:drop" and resource != "scratch"` covers `db:DROP` on `Scratch` (the request
+  cannot match the first part only when folded and the exception only as written).
+- `action != "getReport"` stays false for `getReport`.
+
+Grants and allow conditions match exactly.
 
 ---
 

@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2026-11-13
+
+### Added
+
+- **Resolution** (`theaios.agent_auth.resolution`): what an agent may do for a principal, as a `ResolvedAgent` where every capability and denial carries its provenance (`baseline`, `grant:<role>`, `delegation:<id>`, `deny`, `limit`). `engine.resolve`, `engine.preview`, and `engine.explain(request)` (the decision without logging or recording). Every `AuthDecision` has `provenance`.
+- Per-profile `access` (which user roles or users may use the agent; `service` admits service requests) and `grants` (what the agent may additionally do for a user role). User roles come from `AuthEngine(..., user_roles=...)`.
+- **Limits in code**: `AuthEngine(..., limits={"*": ["payments:*"]})`. They apply after everything, including grants and delegations; no config can widen them.
+- **One identity per request**: `AuthRequest(identity="service")` for an agent acting for no one (baseline only, no grants or delegations); a service request with a user is refused.
+- **Sub-agents**: `engine.delegate(parent, child_agent)` returns the intersection of both resolutions, with the delegation chain.
+- **Tokens**: `engine.issue_token(resolved, audience, ttl)` and `engine.verify_token(token, audience)`, HMAC-SHA256 with a key you provide, short-lived (at most an hour), audience-bound, and refused when the agent's permissions changed since issue.
+- **Separation of duties**: `separation_of_duties: [{name, actions}]` prevents the same user from performing two of the listed actions on the same resource.
+- CLI: `agent-auth preview`; `check --roles`, `check --service`, and the provenance of each decision.
+- Docs: [Resolution](docs/resolution.md); design notes in `docs/design/resolution.md`.
+
+### Changed (from the pre-release test, before 0.2.0 shipped)
+
+Three testers (a newcomer, a red team, a platform engineer) tested the first 0.2 build. Fixed, each with a regression test (`tests/test_resolution_findings.py`):
+
+- **Delegations**: rules can say who may delegate (`roles:`), checked with the delegating user's current roles at every use; disabling delegation or tightening a rule stops existing delegations; delegation rules and sub-agent attenuation no longer read wildcards as text (`read:[!s]*` no longer accepts `read:*`); no delegation to an agent without a profile. Also in 0.1.x: any user could delegate any action.
+- **A2A** conditions see the request's `user`, `resource`, `scope` (they saw only caller metadata: a deny on `/prod` never fired, and `metadata.user` could impersonate). Sub-agent hand-offs (`delegate`) need an A2A allow.
+- **Tool servers**: `authorize(request, resolved=...)` decides against a token's or sub-agent's resolution with approval tiers, scopes and separation of duties; the docs no longer recommend `ResolvedAgent.check` for that.
+- **Access** entries: roles by name, users as `user:<name>`, `service` as a keyword (a user named `finance` or `service` matched them).
+- **Matching**: denials and limits ignore case; separation of duties normalises actions and resources and treats a missing resource as one shared resource.
+- **Limits** are validated when the engine is built (a string or a misspelled agent silently disabled them).
+- **Tokens**: canonical encoding only; refused if issued in the future or living over an hour; `leeway` at most 300 s; key rotation (`token_key=[new, old]`); str keys and short keys refused at construction; clearer mismatch errors.
+- **Sessions**: a session's scope binds its requests. Delegation and session files are reloaded when another process changes them.
+- **Identity provider**: a `user_roles` that fails or returns a non-collection denies the request. `principal(user, service=True)` and CLI `--service --user` are refused.
+- **Config**: duplicate YAML keys are refused; precise errors for grant values and separation-of-duties actions.
+- Unknown agents have no access (except through the deprecated union, for compatibility); `preview` shows union actions; the audit log is private (0600) and records identity and provenance.
+
+An independent re-verification then confirmed those fixes (76 of 79 checks; 17,280 0.1 decisions unchanged) and found more, also fixed with tests:
+
+- `authorize(..., resolved=...)` re-derives the resolution and refuses a stale one (revoked delegation, lost role, policy edit); it checks A2A on every hop of a sub-agent chain, the scopes of every agent in the chain, and uses the chain's strictest approval tier.
+- Limits given as a generator were consumed by validation and silently empty.
+- Actions empty or surrounded by spaces are refused; A2A deny policies ignore case; approval conditions see `identity` (metadata cannot override it); delegations never apply to agents without a profile; a separation-of-duties action listed twice is a config error.
+
+A second re-verification confirmed all of those and found more, also fixed with tests:
+
+- Approval policies are evaluated as each agent of a sub-agent chain (a parent's policy requiring strong approval applied only to the parent); `authorize_async` takes `resolved=`.
+- The HTTP middleware has a token mode (`audience=`: Bearer token, `verify_token`, `authorize` with the token's resolution); header mode, which trusts `X-Agent-Name`/`X-User-Name`, is documented as trusted-gateway only.
+- Separation of duties holds under concurrency (one lock around check and record) and normalises user names.
+- Actions with control, invisible or look-alike characters are refused; chains are limited to 16 agents; the user's roles are looked up once per resolution, not once per delegation; reasons name the parent agent for inherited denials and grants.
+
+A final red-team pass found the core held (resolution, attenuation, tokens, identity separation) and broke two integration paths, now fixed with tests:
+
+- The token-mode middleware used the full URL (caller-controlled host and query string) as the resource, so resource-based approval policies never fired and separation of duties could be split with `?x=1`: it now uses the request path, or `resource=` supplied by the application.
+- The guardrails adapter built a bare engine from the config (no code limits, no user roles, separate separation-of-duties state) and attributed user-less events to a user called `system` (and that account's delegations): it now accepts the application's `AuthEngine`, and an event without a user is a service request.
+- Approval conditions and A2A deny policies (agents and action) ignore case; request scopes containing wildcards are refused; sessions, delegations and the audit log never share a file when the audit path is custom (they used to overwrite each other).
+
+A re-check of the integration paths confirmed those fixes (token-mode middleware, Flask decorator, guardrails adapter, 150 concurrent separation-of-duties races) and found more, also fixed with tests:
+
+- The guardrails adapter checked a `tool_call` event as the action `tool_call`, never the tool: denials, limits and approval policies on tool names did not apply to tool calls from guardrails' LangChain and OpenAI Agents adapters. It now checks `data["tool_name"]` (or `data["action"]`; an event whose two differ is denied), denies a tool call without a tool name and non-string fields. Also in 0.1.x.
+- The guardrails adapter passed the event type (`input`, `tool_call`...) as the agent-auth scope: an agent with `scopes:` was denied every event, and an event with an empty type skipped scope checks. The scope now comes from the application: `evaluate(event, user, scope=...)`.
+- A sub-agent escaped its parent's approval policy by changing the action's case (`db:DROP`); A2A deny conditions now ignore case like their patterns.
+- The FastAPI middleware decides `HEAD` as `get` (HEAD runs the GET handler, so a denial on `get:/admin*` did not cover it).
+
+A re-verification of those fixes confirmed all five and found more, also fixed with tests:
+
+- An event whose tool name and action differ is denied (one action per event): checking both could leave a separation-of-duties record for an action that was refused.
+- Restriction conditions (approval, A2A deny) ignore case on both sides: a mixed-case literal (`action == "deleteUser"`) missed `DELETEUSER`.
+- Actions with a character whose upper case folds differently (dotless `ı`: `drop_ındex` escaped a `drop_index` limit, while `upper()` makes it `DROP_INDEX`) are refused.
+- The docs warn that the HTTP middleware does not see WebSocket connections, and that the guardrails adapter decides a sub-agent on its own resolution.
+
+A further re-verification confirmed those and found more, also fixed with tests:
+
+- Evaluating a restriction in two uniform passes (as written, all folded) let a request split spellings: `db:DROP` on `Scratch` escaped `action == "db:drop" and resource != "scratch"`, and a `!=` against a mixed-case literal denied the value it names. Each comparison is now read as written or folded, whichever makes the restriction apply (flipped under `not`); a randomized test checks it never drops what the condition as written applies.
+- Denial and limit patterns, A2A deny patterns and separation-of-duties actions match the action as written or case-folded: folding alone let `db:drop_ß` escape `db:drop_?` and `cfg:ADMIN` escape `cfg:[!a-z]*` (denied in 0.1.4).
+- Deeply nested metadata no longer raises `RecursionError`; restriction checks fold the request once per decision (200 A2A deny policies: 0.8 ms).
+- Scopes, delegations and allow patterns match exactly on every platform (`fnmatch.fnmatch` ignored case on Windows).
+
+A last re-verification confirmed those against a brute-force reference (80,000 random conditions) and found one more gap, fixed with tests:
+
+- `DB:DROP_ß` still escaped `db:drop_?` (neither the written nor the folded reading matched): deny patterns now also try the lower- and upper-cased action; a test checks every cased Unicode character.
+- A restriction whose condition raises an error as written now always applies (fail closed); long `and`/`or` chains no longer exhaust the recursion limit when the engine is built.
+
+A final round found the same gap with two special characters together (`DB:DROP_ßİ` escaped `db:drop_??`). Deny patterns also match character by character ignoring case (`re.IGNORECASE`), which closes the class (no inconsistency in 300,000 random combinations of every cased character) and makes `İ` an `i` (`DB:DROP_İNDEX` is a `db:drop_index`). Long chains inside a single comparison no longer exhaust the recursion limit.
+
+The last round found nothing exploitable. Its remaining notes are closed too: actions with a case-unstable character (one that case mapping splits or merges, such as `ß`, `ẞ`, `İ`; about 88 characters) are refused, since a `?` in a pattern counts characters and two spellings of the same action could get different verdicts; a target agent name is validated like an action (surrounding spaces, invisible characters); the compiled-pattern cache is no longer capped at 1,024 patterns.
+
+### Deprecated
+
+- `user_permissions_provider` union (an agent may do anything its user may do): emits a `FutureWarning` naming the agent, action and user the first time it decides each (agent, action) pair. Use `grants`; set `resolution: {user_permissions: ignore}` to turn it off now. Removed in 1.0.
+- Approval tiers keep working; new code should prefer theaios-guardrails flow control proposals.
+
+### Compatibility
+
+Every 0.1 config loads and decides as before (all 0.1 tests pass unchanged); new keys are optional. Two adapter changes can deny what 0.1 allowed: the guardrails adapter checks tool calls as their tool (an agent allowed `tool_call` needs the tools), and the FastAPI middleware checks `HEAD` as `get`.
+
 ## [0.1.5] - 2026-11-13
 
 ### Security

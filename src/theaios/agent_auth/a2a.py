@@ -10,6 +10,8 @@ from theaios.agent_auth.expressions import (
     compile_expression,
     evaluate as eval_expr,
 )
+from theaios.agent_auth.casefold import Restriction, fold_context
+from theaios.agent_auth.resolution import denial_matches
 from theaios.agent_auth.config import condition_errors
 from theaios.agent_auth.types import A2AConfig, A2APolicyConfig
 
@@ -28,7 +30,7 @@ class A2AEvaluator:
     ) -> None:
         self._default = config.default
         self._variables = variables or {}
-        self._policies: list[tuple[A2APolicyConfig, ASTNode]] = []
+        self._policies: list[tuple[A2APolicyConfig, ASTNode, Restriction]] = []
 
         for policy in config.policies:
             try:
@@ -40,7 +42,19 @@ class A2AEvaluator:
             problems = condition_errors(policy.condition, self._variables)
             if problems:
                 raise ExpressionError(f"Error in A2A policy '{policy.name}': {'; '.join(problems)}")
-            self._policies.append((policy, ast))
+            self._policies.append((policy, ast, Restriction(ast, self._variables)))
+
+    def may_reach(self, from_agent: str, to_agent: str) -> bool:
+        """Whether any action from ``from_agent`` to ``to_agent`` could be allowed: an allow
+        policy matching both agents, or a default of allow."""
+        if self._default == "allow":
+            return True
+        return any(
+            p.effect == "allow"
+            and fnmatch.fnmatchcase(from_agent, p.from_agent)
+            and fnmatch.fnmatchcase(to_agent, p.to_agent)
+            for p, *_ in self._policies
+        )
 
     def evaluate(
         self,
@@ -76,22 +90,34 @@ class A2AEvaluator:
         deny_reason: str | None = None
         allow_reason: str | None = None
 
-        for policy, ast in self._policies:
+        folded_context: dict[str, object] | None = None
+        for policy, ast, restriction in self._policies:
             # Check agent patterns
-            if not fnmatch.fnmatch(from_agent, policy.from_agent):
-                continue
-            if not fnmatch.fnmatch(to_agent, policy.to_agent):
-                continue
-            if not fnmatch.fnmatch(action, policy.action):
+            # Deny policies match agents and action regardless of case (fail closed); allow
+            # policies match them exactly.
+            if policy.effect == "deny":
+                if not (
+                    denial_matches(from_agent, policy.from_agent)
+                    and denial_matches(to_agent, policy.to_agent)
+                    and denial_matches(action, policy.action)
+                ):
+                    continue
+            elif not (
+                fnmatch.fnmatchcase(from_agent, policy.from_agent)
+                and fnmatch.fnmatchcase(to_agent, policy.to_agent)
+                and fnmatch.fnmatchcase(action, policy.action)
+            ):
                 continue
 
-            # Evaluate condition
+            # Evaluate condition. A deny condition ignores case like its patterns
+            # (casefold.py); an allow condition is exact.
             try:
-                result = eval_expr(
-                    ast,
-                    context=eval_context,
-                    variables=self._variables,
-                )
+                if policy.effect == "deny":
+                    if folded_context is None:
+                        folded_context = fold_context(eval_context)
+                    result = restriction.holds(eval_context, folded_context)
+                else:
+                    result = bool(eval_expr(ast, context=eval_context, variables=self._variables))
             except ExpressionError:
                 # Fail closed: a deny policy that cannot be evaluated denies; an allow policy
                 # that cannot be evaluated grants nothing.

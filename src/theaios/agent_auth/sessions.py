@@ -24,10 +24,27 @@ class SessionManager:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._sessions: dict[str, Session] = {}
+        self._stamp: tuple[int, int] | None = None
         self._load()
+
+    def _file_stamp(self) -> tuple[int, int] | None:
+        try:
+            st = self._path.stat()
+        except OSError:
+            return None
+        return (st.st_ino, st.st_mtime_ns)
+
+    def _fresh(self) -> None:
+        """Reload when another process (another engine, the CLI) replaced the file, so a
+        revocation there takes effect here."""
+        stamp = self._file_stamp()
+        if stamp != self._stamp:
+            self._sessions.clear()
+            self._load()
 
     def _load(self) -> None:
         """Load sessions from JSONL file."""
+        self._stamp = self._file_stamp()
         if not self._path.exists():
             return
 
@@ -74,6 +91,7 @@ class SessionManager:
                 f.write(json.dumps(entry, default=str) + "\n")
             temp_path = Path(f.name)
         temp_path.replace(self._path)
+        self._stamp = self._file_stamp()
 
     def create(
         self,
@@ -100,6 +118,7 @@ class SessionManager:
         Session
             The newly created session.
         """
+        self._fresh()
         now = datetime.now(timezone.utc)
         session = Session(
             session_id=str(uuid.uuid4()),
@@ -119,6 +138,7 @@ class SessionManager:
 
         Automatically marks expired sessions.
         """
+        self._fresh()
         session = self._sessions.get(session_id)
         if session is None:
             return None
@@ -144,6 +164,7 @@ class SessionManager:
 
     def revoke(self, session_id: str) -> bool:
         """Revoke a session. Returns True if revoked, False if not found."""
+        self._fresh()
         session = self._sessions.get(session_id)
         if session is None:
             return False
@@ -161,6 +182,7 @@ class SessionManager:
         user: str | None = None,
     ) -> list[Session]:
         """List active sessions, optionally filtered by agent and/or user."""
+        self._fresh()
         results: list[Session] = []
         now = datetime.now(timezone.utc)
 
@@ -193,6 +215,7 @@ class SessionManager:
 
         Returns the number of sessions expired.
         """
+        self._fresh()
         now = datetime.now(timezone.utc)
         count = 0
 
