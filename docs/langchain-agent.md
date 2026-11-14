@@ -44,7 +44,8 @@ written in tool names.
 | approval policy matches | does not run | an error `ToolMessage` pointing to guardrails | continues |
 
 A denial's decision is in the `ToolMessage`'s `artifact["theaios"]`, with its provenance
-(`grant:finance:approve_invoice`, `limit:payments:*`...), and is not sent to the model.
+(`limit:payments:*`, `deny:...`; empty when nothing granted the action), and is not sent to
+the model.
 
 ## Who is who
 
