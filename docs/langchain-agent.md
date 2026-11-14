@@ -93,6 +93,11 @@ agent = create_deep_agent(model, tools, subagents=subagents, context_schema=Ctx,
                           middleware=[AgentAuthMiddleware(engine)], name="assistant")
 ```
 
+**A sub-agent of a sub-agent** lists every agent above it, outermost first, so it is
+attenuated through all of them: `AgentAuthMiddleware(engine, delegated_by=["assistant",
+"researcher"])` for `helper`, handed work by `researcher`, itself handed work by `assistant`.
+Every hop needs its A2A allow.
+
 **Hand-offs are authorized.** A `task` call is authorized as the action `task` (grant it to the
 agent) *and* as a hand-off to the sub-agent it names: the sub-agent needs a profile and an A2A
 allow (`a2a: {policies: [{from_agent: assistant, to_agent: researcher, effect: allow}]}`).

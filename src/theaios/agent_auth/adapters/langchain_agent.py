@@ -32,9 +32,11 @@ this one refuses the call, or the run pauses before it, the record is released.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
+
+from theaios.core.marks import is_marked, mark
 
 from theaios.agent_auth.engine import AuthEngine
 from theaios.agent_auth.resolution import ResolvedAgent
@@ -71,10 +73,11 @@ class AgentAuthMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ign
         ``user(request) -> str | None``. Default: ``user_id`` from the run's context.
     resource, scope : callable, optional
         ``resource(request)`` / ``scope(request)`` for the authorization request.
-    delegated_by : str, optional
-        The parent agent's name, for a sub-agent: decide with the parent's attenuated
-        resolution (``engine.delegate``), for the same user. Required in a Deep Agents
-        sub-agent.
+    delegated_by : str or sequence of str, optional
+        For a sub-agent: the agents that handed it the work, outermost first (``"assistant"``,
+        or ``["assistant", "researcher"]`` for a sub-agent of a sub-agent). It decides with
+        the resolution attenuated through every one of them (``engine.delegate``), for the
+        same user. Required in a Deep Agents sub-agent.
     handoff_tool : str
         The tool that hands work to a sub-agent (Deep Agents: ``"task"``, whose
         ``subagent_type`` argument names the sub-agent).
@@ -88,20 +91,24 @@ class AgentAuthMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ign
         user: Of | None = None,
         resource: Of | None = None,
         scope: Of | None = None,
-        delegated_by: str | None = None,
+        delegated_by: str | Sequence[str] | None = None,
         handoff_tool: str = "task",
     ) -> None:
         super().__init__()
         if not isinstance(engine, AuthEngine):
             raise TypeError("AgentAuthMiddleware needs an AuthEngine")
-        if delegated_by is not None and not (isinstance(delegated_by, str) and delegated_by):
-            raise ValueError("delegated_by must be the parent agent's name")
+        chain = [delegated_by] if isinstance(delegated_by, str) else list(delegated_by or [])
+        if delegated_by is not None and (
+            not chain or not all(isinstance(a, str) and a for a in chain)
+        ):
+            raise ValueError("delegated_by must name the parent agent(s), outermost first")
         self._engine = engine
         self._agent = agent
         self._user = user
         self._resource = resource
         self._scope = scope
-        self._parent = delegated_by
+        self._chain = chain
+        self._parent = chain[-1] if chain else None
         self._handoff_tool = handoff_tool
 
     def wrap_tool_call(
@@ -224,10 +231,13 @@ class AgentAuthMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ign
         )
 
     def _resolved(self, auth: AuthRequest) -> ResolvedAgent | None:
-        if self._parent is None:
+        if not self._chain:
             return None
         principal = self._principal(auth)
-        return self._engine.delegate(self._engine.resolve(self._parent, principal), auth.agent)
+        resolved = self._engine.resolve(self._chain[0], principal)
+        for agent in [*self._chain[1:], auth.agent]:  # attenuated through every ancestor
+            resolved = self._engine.delegate(resolved, agent)
+        return resolved
 
     def _agent_of(self, request: ToolCallRequest) -> str:
         if self._agent:
@@ -270,7 +280,11 @@ def _refused_inside(result: object) -> bool:
         return False
     artifact = result.artifact if isinstance(result.artifact, Mapping) else {}
     detail = artifact.get("theaios")
-    return isinstance(detail, Mapping) and detail.get("component") != COMPONENT
+    return (
+        isinstance(detail, Mapping)
+        and is_marked(detail.get("mark"))
+        and detail.get("component") != COMPONENT
+    )
 
 
 def _refusal(
@@ -281,6 +295,7 @@ def _refusal(
     codes: list[str] | None = None,
 ) -> ToolMessage:
     detail: dict[str, object] = {
+        "mark": mark(),  # unforgeable: content a tool returns cannot pass for a refusal
         "component": COMPONENT,
         "verdict": "deny",
         "codes": codes if codes is not None else ["deny"],

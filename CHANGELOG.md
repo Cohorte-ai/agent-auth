@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **LangChain 1.x / Deep Agents middleware** (`theaios.agent_auth.adapters.langchain_agent.AgentAuthMiddleware`, extra `langchain-agent`): every tool call is authorized as the agent (`agent=` or the graph's name) for the run's user (`runtime.context.user_id` or `user=`; none = a service run, and the denial says so). Denied calls do not run and the model gets an error `ToolMessage` (the run continues; decision and provenance in its `artifact`).
 - Sub-agents: `delegated_by=` decides with the parent's attenuated resolution; a Deep Agents sub-agent without it is refused. Hand-offs (`task`) are authorized as the action and as a delegation to the named sub-agent (profile + A2A allow), which closes Deep Agents' automatic `general-purpose` sub-agent unless you allow it.
-- The separation-of-duties record of an allowed call is released when the call did not run (refused by a check inside, or the run paused before it).
+- The separation-of-duties record of an allowed call is released when the call did not run (refused by a check inside, or the run paused before it). Only a refusal carrying the theaios mark (theaios-core 0.1.2) counts: a tool result imitating one cannot release a record.
+- `delegated_by` takes the whole chain for a sub-agent of a sub-agent (`["assistant", "researcher"]`); with only the immediate parent, a grandchild could do what the root never could.
 
 ### Changed (from the pre-release test, before 0.3.0 shipped)
 
