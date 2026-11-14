@@ -1,6 +1,7 @@
 # Integration Guide
 
-Using agent-auth with guardrails, HTTP middleware, and custom systems.
+Using agent-auth with guardrails, HTTP middleware, and custom systems. For LangChain 1.x and
+Deep Agents, see [LangChain agents](langchain-agent.md).
 
 ---
 
