@@ -17,13 +17,9 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, ToolMessage  # noqa: E402
 from langchain_core.tools import tool  # noqa: E402
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
-from langgraph.types import Command  # noqa: E402
 
 from theaios.agent_auth import AuthEngine, load_config  # noqa: E402
-from theaios.agent_auth.adapters.langchain_agent import (  # noqa: E402
-    APPROVAL_TYPE,
-    AgentAuthMiddleware,
-)
+from theaios.agent_auth.adapters.langchain_agent import AgentAuthMiddleware  # noqa: E402
 
 CONFIG = """
 version: "1.0"
@@ -32,6 +28,7 @@ roles:
 profiles:
   assistant:
     role: reader
+    allow: [task]
     access: [finance, sales, service]
     grants: {finance: [approve_invoice]}
   researcher: {role: reader, allow: [approve_invoice, web_search]}
@@ -158,42 +155,13 @@ def test_code_limits_apply() -> None:
     assert RAN == [] and "limit:read_*" in _tools(out)[0].artifact["theaios"]["provenance"]
 
 
-def _pause(engine: AuthEngine | None = None) -> tuple[Any, dict[str, Any]]:
-    agent = _agent([_call("db:drop", "c1", target="prod")], engine)
+def test_an_approval_policy_refuses_and_points_to_guardrails() -> None:
+    agent = _agent([_call("db:drop", "c1", target="prod")])
     out = agent.invoke({"messages": [("user", "x")]}, CFG, context=Ctx("alice"), version="v2")
-    assert len(out.interrupts) == 1 and RAN == []
-    return agent, out.interrupts[0].value
-
-
-def test_an_approval_policy_pauses_the_run() -> None:
-    _, ask = _pause()
-    assert ask["type"] == APPROVAL_TYPE and ask["component"] == "agent-auth"
-    assert ask["tool"] == "db:drop" and ask["tier"] == "strong" and ask["user"] == "alice"
-
-
-def test_an_approved_call_runs_once() -> None:
-    agent, ask = _pause()
-    resume = {"proposal_id": ask["proposal_id"], "approve": True, "by": "carol"}
-    agent.invoke(Command(resume=resume), CFG, context=Ctx("alice"), version="v2")
-    assert RAN == ["db:drop:prod"]
-
-
-@pytest.mark.parametrize(
-    "resume",
-    [
-        {"approve": False, "by": "carol"},
-        {"proposal_id": "aa-other", "approve": True, "by": "carol"},
-        {"approve": "true", "by": "carol"},
-        {"approve": True, "by": ""},
-        "yes",
-    ],
-)
-def test_anything_but_a_valid_approval_does_not_run(resume: Any) -> None:
-    agent, ask = _pause()
-    if isinstance(resume, dict) and "proposal_id" not in resume:
-        resume = {**resume, "proposal_id": ask["proposal_id"]}
-    out = agent.invoke(Command(resume=resume), CFG, context=Ctx("alice"), version="v2")
-    assert RAN == [] and _tools(out)[-1].status == "error"
+    assert out.interrupts == () and RAN == []
+    msg = _tools(out)[0]
+    assert msg.artifact["theaios"]["codes"] == ["approval_required"]
+    assert "FlowMiddleware" in msg.content and "strong" in msg.content
 
 
 def test_separation_of_duties_records_only_what_ran() -> None:
@@ -243,3 +211,129 @@ def test_a_failing_identity_provider_refuses() -> None:
     )
     agent.invoke({"messages": [("user", "x")]}, CFG, context=Ctx("alice"))
     assert RAN == []
+
+
+# --- Round 1 findings (usability test of 6c78d67) ----------------------------------------------
+
+from langchain.agents.middleware import AgentMiddleware  # noqa: E402
+from langgraph.types import interrupt  # noqa: E402
+
+
+class RefuseInside(AgentMiddleware):  # stands in for guardrails inside AgentAuthMiddleware
+    def _refuse(self, request: Any) -> ToolMessage:
+        return ToolMessage(
+            content="Blocked",
+            name=request.tool_call["name"],
+            tool_call_id=request.tool_call["id"],
+            status="error",
+            artifact={"theaios": {"component": "guardrails", "codes": ["rule_deny"]}},
+        )
+
+    def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+        return (
+            self._refuse(request)
+            if request.tool_call["name"] == "create_payment"
+            else handler(request)
+        )
+
+    async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+        return (
+            self._refuse(request)
+            if request.tool_call["name"] == "create_payment"
+            else await handler(request)
+        )
+
+
+class PauseInside(AgentMiddleware):
+    def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+        if request.tool_call["name"] == "create_payment":
+            interrupt({"q": "ok?"})
+        return handler(request)
+
+
+def _payer(script: list[AIMessage], engine: AuthEngine, inner: AgentMiddleware) -> Any:
+    model = Model(messages=iter([*script, AIMessage(content="done")]))
+    return create_agent(
+        model,
+        TOOLS,
+        middleware=[AgentAuthMiddleware(engine), inner],
+        context_schema=Ctx,
+        checkpointer=InMemorySaver(),
+        name="payer",
+    )
+
+
+def test_a_call_refused_inside_leaves_no_separation_of_duties_record() -> None:
+    engine = _engine()
+    _payer([_call("create_payment", "c1", target="inv-1")], engine, RefuseInside()).invoke(
+        {"messages": [("user", "x")]}, CFG, context=Ctx("alice")
+    )
+    _agent([_call("approve_payment", "c2", target="inv-1")], engine, name="payer").invoke(
+        {"messages": [("user", "x")]}, {"configurable": {"thread_id": "t2"}}, context=Ctx("alice")
+    )
+    assert RAN == ["approve_payment:inv-1"]  # the refused create did not count
+
+
+def test_a_pause_inside_leaves_no_record_until_the_call_runs() -> None:
+    engine = _engine()
+    out = _payer([_call("create_payment", "c1", target="inv-1")], engine, PauseInside()).invoke(
+        {"messages": [("user", "x")]}, CFG, context=Ctx("alice"), version="v2"
+    )
+    assert out.interrupts
+    _agent([_call("approve_payment", "c2", target="inv-1")], engine, name="payer").invoke(
+        {"messages": [("user", "x")]}, {"configurable": {"thread_id": "t2"}}, context=Ctx("alice")
+    )
+    assert RAN == ["approve_payment:inv-1"]
+
+
+@tool
+def task(description: str, subagent_type: str) -> str:
+    """Hand work to a sub-agent."""
+    RAN.append("task")
+    return "handed off"
+
+
+TASK = task
+
+
+def _handoff(child: str) -> list[ToolMessage]:
+    model = Model(
+        messages=iter(
+            [_call("task", "c1", description="d", subagent_type=child), AIMessage(content="done")]
+        )
+    )
+    engine = AuthEngine(load_config("a.yaml"), user_roles=lambda u: ROLES.get(u, []))
+    agent = create_agent(
+        model,
+        [*TOOLS, TASK],
+        middleware=[AgentAuthMiddleware(engine)],
+        context_schema=Ctx,
+        checkpointer=InMemorySaver(),
+        name="assistant",
+    )
+    return _tools(agent.invoke({"messages": [("user", "x")]}, CFG, context=Ctx("alice")))
+
+
+def test_a_handoff_to_a_sub_agent_without_profile_or_a2a_allow_is_refused() -> None:
+    for child in ("general-purpose", "payer"):
+        msg = _handoff(child)[0]
+        assert msg.status == "error" and msg.artifact["theaios"]["codes"] == ["handoff"], child
+    assert RAN == []
+
+
+def test_a_handoff_the_a2a_rules_allow_goes_through() -> None:
+    msg = _handoff("researcher")[0]
+    assert msg.status == "success" and RAN == ["task"], msg.content
+
+
+def test_a_sub_agent_without_delegated_by_is_refused() -> None:
+    agent = _agent([_call("read_docs", "c1")], name="researcher")
+    cfg = {"configurable": {"thread_id": "t1", "ls_agent_type": "subagent"}}
+    out = agent.invoke({"messages": [("user", "x")]}, cfg, context=Ctx("alice"))
+    assert RAN == [] and _tools(out)[0].artifact["theaios"]["codes"] == ["no_parent"]
+
+
+def test_a_service_run_denial_says_why() -> None:
+    agent = _agent([_call("approve_invoice", "c1")])
+    out = agent.invoke({"messages": [("user", "x")]}, CFG, context=Ctx(None))
+    assert "service run" in _tools(out)[0].content

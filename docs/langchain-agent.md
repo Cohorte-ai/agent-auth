@@ -26,7 +26,7 @@ agent = create_agent(
     "openai:gpt-4.1-mini", tools=[read_docs, approve_invoice],
     middleware=[AgentAuthMiddleware(engine)],
     context_schema=Ctx,
-    checkpointer=InMemorySaver(),   # needed only if an approval policy can pause the run
+    checkpointer=InMemorySaver(),
     name="assistant",               # the agent profile this graph runs as
 )
 agent.invoke({"messages": [...]}, {"configurable": {"thread_id": "t1"}}, context=Ctx("alice"))
@@ -41,7 +41,7 @@ written in tool names.
 |---|---|---|---|
 | allowed | runs | the result | continues |
 | denied | does not run | an error `ToolMessage` with the reason | continues |
-| approval policy matches | does not run yet | nothing yet | pauses (`interrupt`) |
+| approval policy matches | does not run | an error `ToolMessage` pointing to guardrails | continues |
 
 A denial's decision is in the `ToolMessage`'s `artifact["theaios"]`, with its provenance
 (`grant:finance:approve_invoice`, `limit:payments:*`...), and is not sent to the model.
@@ -58,33 +58,32 @@ A denial's decision is in the `ToolMessage`'s `artifact["theaios"]`, with its pr
 
 The model chooses the tool and its arguments; it never chooses the user or the agent.
 
-## Approving
+## Approvals
 
-An approval policy pauses the run with one interrupt:
+agent-auth decides who may do what; it does not pause agents for a person. When an approval
+policy matches, the call is refused, and the reason says so. In agents, approvals go through
+theaios-guardrails' `FlowMiddleware`: frozen arguments, decided once, executed once, durable
+across restarts. Write the condition as a guardrails rule:
 
-```python
-out = agent.invoke(..., version="v2")
-ask = out.interrupts[0].value
-# {"type": "theaios.approval", "component": "agent-auth", "proposal_id": "aa-...",
-#  "agent": "assistant", "user": "alice", "tool": "db:drop", "args": {...},
-#  "tier": "strong", "reasons": [...]}
-agent.invoke(Command(resume={"proposal_id": ask["proposal_id"], "approve": True, "by": "carol"}),
-             config, context=Ctx("alice"), version="v2")
+```yaml
+rules:
+  - name: drop-needs-approval
+    scope: tool_call
+    when: tool_name == "db:drop"
+    then: require_approval
+    tier: strong
 ```
 
-The decision must name the proposal, say who decided, and `approve` must be `True` or `False`.
-Anything else is refused and the tool does not run. Nothing is recorded (audit log,
-separation of duties) until the call really runs, and the call is authorized again when it
-does: if a role or a policy changed while it waited, it is refused.
-
-For approvals with a durable record (frozen arguments, decided once, executed once, survives
-restarts), use theaios-guardrails' `FlowMiddleware`.
+The separation-of-duties record of an allowed call is kept only if the call really ran: when
+a check inside this middleware refuses it, or the run pauses before it ran, the record is
+released, so it cannot block the user's next legitimate action.
 
 ## Sub-agents (Deep Agents)
 
 Deep Agents does not pass the main agent's middleware to its sub-agents. Give each sub-agent
 its own, with `delegated_by`, so it decides with the parent's attenuated resolution: a
-sub-agent never gets more than the agent that handed it the work, for the same user.
+sub-agent never gets more than the agent that handed it the work, for the same user. A
+sub-agent's middleware without `delegated_by` refuses every call.
 
 ```python
 subagents = [{"name": "researcher", "description": "...", "tools": [web_search],
@@ -93,8 +92,15 @@ agent = create_deep_agent(model, tools, subagents=subagents, context_schema=Ctx,
                           middleware=[AgentAuthMiddleware(engine)], name="assistant")
 ```
 
-The hand-off needs an A2A allow (`a2a: {policies: [{from_agent: assistant, to_agent:
-researcher, effect: allow}]}`); without it the sub-agent may do nothing.
+**Hand-offs are authorized.** A `task` call is authorized as the action `task` (grant it to the
+agent) *and* as a hand-off to the sub-agent it names: the sub-agent needs a profile and an A2A
+allow (`a2a: {policies: [{from_agent: assistant, to_agent: researcher, effect: allow}]}`).
+Deep Agents adds a `general-purpose` sub-agent with all the main agent's tools; without a
+profile and an A2A allow it cannot be reached. If you allow it, give it the middlewares like
+any other sub-agent.
+
+Deep Agents' built-in tools (`ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`,
+`grep`, `task`, `execute`) are authorized like any tool: grant the ones the agent needs.
 
 ## With guardrails and agent-monitor
 
@@ -103,4 +109,5 @@ middleware=[MonitorMiddleware(monitor), AgentAuthMiddleware(engine), FlowMiddlew
 ```
 
 The first in the list is the outermost: the monitor sees every outcome, authorization decides
-who may call the tool, flow control decides whether the session may call it now.
+who may call the tool, flow control decides whether the session may call it now and asks a
+person last, so nobody approves a call authorization would refuse.

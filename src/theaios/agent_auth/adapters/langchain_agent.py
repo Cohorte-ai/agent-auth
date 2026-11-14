@@ -8,9 +8,9 @@ run is for:
 - **allowed**: the tool runs;
 - **denied**: the tool does not run; the model gets an error ``ToolMessage`` with the reason
   (the run continues), and the decision (with its provenance) rides in its ``artifact``;
-- **approval required** (an approval policy's tier): the run pauses with a LangGraph
-  ``interrupt``; resume with ``Command(resume={"proposal_id": ..., "approve": True, "by":
-  "alice"})``. Nothing is recorded (audit, separation of duties) until the call really runs.
+- **approval policy matches**: refused too. Approvals in agents go through theaios-guardrails'
+  ``FlowMiddleware`` (durable proposals, decided once, executed once): write the condition as
+  a guardrails rule with ``then: require_approval``.
 
 Identity comes from the application, never from the model:
 
@@ -19,34 +19,38 @@ Identity comes from the application, never from the model:
 - **agent**: ``agent=`` or the graph's name (``create_agent(name=...)``, Deep Agents sub-agent
   names).
 - **sub-agents**: ``delegated_by="parent"`` decides with ``engine.delegate(...)``: a sub-agent
-  never gets more than the agent that handed it the work.
+  never gets more than the agent that handed it the work. A Deep Agents sub-agent without
+  ``delegated_by`` is refused.
+- **hand-offs**: a Deep Agents ``task`` call is authorized as the action ``task`` *and* as a
+  hand-off to the sub-agent it names (A2A rules, the sub-agent's profile): a sub-agent with no
+  profile or no A2A allow (Deep Agents' automatic ``general-purpose`` one, unless you allow
+  it) cannot be reached.
 
-The action is the tool name. ``resource=`` and ``scope=`` (functions of the request) feed
-separation of duties, scopes and approval conditions; they may read the tool arguments, which
-the model chooses.
+The separation-of-duties record is kept only if the call really ran: when a check inside
+this one refuses the call, or the run pauses before it, the record is released.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import Any
 
 from theaios.agent_auth.engine import AuthEngine
+from theaios.agent_auth.resolution import ResolvedAgent
 from theaios.agent_auth.types import AuthDecision, AuthRequest
 
 try:
     from langchain.agents.middleware import AgentMiddleware, ToolCallRequest
     from langchain_core.messages import ToolMessage
-    from langgraph.types import Command, interrupt
+    from langgraph.errors import GraphInterrupt
+    from langgraph.types import Command
 except ImportError as e:  # pragma: no cover - exercised only without the extra
     raise ImportError(
         "The LangChain agent middleware needs langchain>=1.0 and langgraph>=1.0. "
         'Install with: pip install "theaios-agent-auth[langchain-agent]"'
     ) from e
 
-APPROVAL_TYPE = "theaios.approval"
 COMPONENT = "agent-auth"
 
 Handler = Callable[[ToolCallRequest], "ToolMessage | Command[Any]"]
@@ -69,7 +73,11 @@ class AgentAuthMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ign
         ``resource(request)`` / ``scope(request)`` for the authorization request.
     delegated_by : str, optional
         The parent agent's name, for a sub-agent: decide with the parent's attenuated
-        resolution (``engine.delegate``), for the same user.
+        resolution (``engine.delegate``), for the same user. Required in a Deep Agents
+        sub-agent.
+    handoff_tool : str
+        The tool that hands work to a sub-agent (Deep Agents: ``"task"``, whose
+        ``subagent_type`` argument names the sub-agent).
     """
 
     def __init__(
@@ -81,6 +89,7 @@ class AgentAuthMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ign
         resource: Of | None = None,
         scope: Of | None = None,
         delegated_by: str | None = None,
+        handoff_tool: str = "task",
     ) -> None:
         super().__init__()
         if not isinstance(engine, AuthEngine):
@@ -93,26 +102,57 @@ class AgentAuthMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ign
         self._resource = resource
         self._scope = scope
         self._parent = delegated_by
+        self._handoff_tool = handoff_tool
 
     def wrap_tool_call(
         self, request: ToolCallRequest, handler: Handler
     ) -> ToolMessage | Command[Any]:
-        refusal = self._decide(request)
-        return refusal if refusal is not None else handler(request)
+        decided = self._decide(request)
+        if isinstance(decided, ToolMessage):
+            return decided
+        try:
+            result = handler(request)
+        except GraphInterrupt:  # the run paused before the tool finished: not done yet
+            self._engine._sod_release(decided)
+            raise
+        if _refused_inside(result):
+            self._engine._sod_release(decided)
+        return result
 
     async def awrap_tool_call(
         self, request: ToolCallRequest, handler: AsyncHandler
     ) -> ToolMessage | Command[Any]:
-        refusal = self._decide(request)
-        return refusal if refusal is not None else await handler(request)
+        decided = self._decide(request)
+        if isinstance(decided, ToolMessage):
+            return decided
+        try:
+            result = await handler(request)
+        except GraphInterrupt:
+            self._engine._sod_release(decided)
+            raise
+        if _refused_inside(result):
+            self._engine._sod_release(decided)
+        return result
 
     # ------------------------------------------------------------------------------------
 
-    def _decide(self, request: ToolCallRequest) -> ToolMessage | None:
-        """None if the tool may run now; otherwise what the model sees instead. May pause the
-        run for approval (``interrupt``)."""
+    def _decide(self, request: ToolCallRequest) -> ToolMessage | AuthRequest:
+        """The authorized request (recorded) if the tool may run; otherwise what the model
+        sees instead."""
         call = request.tool_call
         tool = str(call["name"])
+        config = getattr(request.runtime, "config", None) or {}
+        if (
+            self._parent is None
+            and (config.get("configurable") or {}).get("ls_agent_type") == "subagent"
+        ):
+            return _refusal(
+                call,
+                "this agent runs as a sub-agent: give its AgentAuthMiddleware "
+                "delegated_by='<parent agent>' so it never gets more than its parent",
+                None,
+                codes=["no_parent"],
+            )
         user = self._of(self._user, request) if self._user else _context_user(request)
         auth = AuthRequest(
             agent=self._agent_of(request),
@@ -127,55 +167,66 @@ class AgentAuthMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ign
         except Exception as exc:  # the identity provider failed, or no such parent: closed
             return _refusal(call, f"could not resolve the agent: {exc}", None)
 
-        first = self._engine.explain(auth, resolved=resolved)
-        if not first.allowed or not first.requires_approval:
-            final = self._engine.authorize(auth, resolved=resolved)  # logs, records
-            return (
-                None
-                if final.allowed and not final.requires_approval
-                else _refusal(call, final.reason, final)
-            )
+        handoff = self._handoff_refusal(request, auth, resolved)
+        if handoff is not None:
+            return handoff
 
-        # Approval. LangGraph runs this node again on resume: everything above runs twice
-        # (explain records nothing), and interrupt() then returns the decision.
-        proposal_id = _proposal_id(request, auth)
-        decision = interrupt(
-            {
-                "type": APPROVAL_TYPE,
-                "component": COMPONENT,
-                "proposal_id": proposal_id,
-                "agent": auth.agent,
-                "user": auth.user,
-                "tool": tool,
-                "args": dict(call.get("args") or {}),
-                "tier": first.tier,
-                "reasons": [{"code": first.approval_policy or "approval", "message": first.reason}],
-            }
-        )
-        problem = _check_decision(decision, proposal_id)
-        if problem:
-            return _refusal(call, problem, first, codes=["bad_decision"], proposal_id=proposal_id)
-        assert isinstance(decision, Mapping)
-        if not decision["approve"]:
-            note = f": {decision.get('note')}" if decision.get("note") else ""
+        first = self._engine.explain(auth, resolved=resolved)
+        if first.allowed and first.requires_approval:
+            reason = (
+                f"requires {first.tier} approval ({first.approval_policy or 'approval policy'}). "
+                "Approvals in agents go through theaios-guardrails' FlowMiddleware: write this "
+                "condition as a guardrails rule with 'then: require_approval'"
+            )
+            refused = replace(first, allowed=False, requires_approval=False, reason=reason)
+            self._engine._log(auth, refused)  # audited, not recorded for separation of duties
+            return _refusal(call, reason, refused, codes=["approval_required"])
+        final = self._engine.authorize(auth, resolved=resolved)  # logs, records
+        if not final.allowed:
+            return _refusal(call, _with_hint(final.reason, auth), final)
+        if final.requires_approval:  # a policy changed between explain and authorize
+            self._engine._sod_release(auth)
+            return _refusal(call, "requires approval", final, codes=["approval_required"])
+        return auth
+
+    def _handoff_refusal(
+        self, request: ToolCallRequest, auth: AuthRequest, resolved: ResolvedAgent | None
+    ) -> ToolMessage | None:
+        """A hand-off to a sub-agent must be allowed like any delegation (A2A, profile)."""
+        call = request.tool_call
+        args = call.get("args") or {}
+        if call["name"] != self._handoff_tool or not isinstance(args, Mapping):
+            return None
+        child = args.get("subagent_type")
+        if not isinstance(child, str) or not child:
+            return _refusal(call, "a hand-off must name its sub-agent", None, codes=["handoff"])
+        try:
+            parent = (
+                resolved
+                if resolved is not None
+                else self._engine.resolve(auth.agent, self._principal(auth))
+            )
+            delegated = self._engine.delegate(parent, child)
+        except Exception as exc:
+            return _refusal(call, f"hand-off to '{child}' refused: {exc}", None, codes=["handoff"])
+        if not delegated.access:
             return _refusal(
                 call,
-                f"rejected by {decision['by']}{note}",
-                first,
-                codes=["rejected"],
-                proposal_id=proposal_id,
+                f"hand-off to sub-agent '{child}' refused: {delegated.access_reason}",
+                None,
+                codes=["handoff"],
             )
-        final = self._engine.authorize(auth, resolved=self._resolved(auth))
-        if not final.allowed:  # something changed while it waited (a role, a policy)
-            return _refusal(call, final.reason, final, proposal_id=proposal_id)
         return None
 
-    def _resolved(self, auth: AuthRequest) -> Any:
-        if self._parent is None:
-            return None
-        principal = (
+    def _principal(self, auth: AuthRequest) -> Any:
+        return (
             self._engine.principal(auth.user) if auth.user else self._engine.principal(service=True)
         )
+
+    def _resolved(self, auth: AuthRequest) -> ResolvedAgent | None:
+        if self._parent is None:
+            return None
+        principal = self._principal(auth)
         return self._engine.delegate(self._engine.resolve(self._parent, principal), auth.agent)
 
     def _agent_of(self, request: ToolCallRequest) -> str:
@@ -205,35 +256,21 @@ def _context_user(request: ToolCallRequest) -> str:
     return "" if value is None else str(value)
 
 
-def _proposal_id(request: ToolCallRequest, auth: AuthRequest) -> str:
-    """Stable across the pause: the thread, the tool call, who asks, and the arguments."""
-    config = getattr(request.runtime, "config", None) or {}
-    body = {
-        "thread": str((config.get("configurable") or {}).get("thread_id") or ""),
-        "call": str(request.tool_call.get("id") or ""),
-        "agent": auth.agent,
-        "user": auth.user,
-        "tool": auth.action,
-        "args": request.tool_call.get("args") or {},
-    }
-    raw = json.dumps(body, sort_keys=True, default=str).encode()
-    return "aa-" + hashlib.sha256(raw).hexdigest()[:24]
+def _with_hint(reason: str, auth: AuthRequest) -> str:
+    if auth.user:
+        return reason
+    return (
+        reason + " (service run: no user in the run's context, so no grants or delegations apply)"
+    )
 
 
-def _check_decision(decision: object, proposal_id: str) -> str:
-    if not isinstance(decision, Mapping):
-        return (
-            "the run was resumed without a decision: resume with {'proposal_id': ..., "
-            "'approve': True|False, 'by': '<who>'}"
-        )
-    if decision.get("proposal_id") != proposal_id:
-        return f"the decision does not name proposal {proposal_id}"
-    if type(decision.get("approve")) is not bool:
-        return "the decision's 'approve' must be true or false"
-    by = decision.get("by")
-    if not isinstance(by, str) or not by.strip():
-        return "the decision must say who decided ('by')"
-    return ""
+def _refused_inside(result: object) -> bool:
+    """Did another theaios check inside this one refuse the call (so the tool did not run)?"""
+    if not (isinstance(result, ToolMessage) and result.status == "error"):
+        return False
+    artifact = result.artifact if isinstance(result.artifact, Mapping) else {}
+    detail = artifact.get("theaios")
+    return isinstance(detail, Mapping) and detail.get("component") != COMPONENT
 
 
 def _refusal(
@@ -242,19 +279,14 @@ def _refusal(
     decision: AuthDecision | None,
     *,
     codes: list[str] | None = None,
-    proposal_id: str | None = None,
 ) -> ToolMessage:
     detail: dict[str, object] = {
         "component": COMPONENT,
         "verdict": "deny",
-        "codes": codes
-        if codes is not None
-        else (["approval"] if decision and decision.requires_approval else ["deny"]),
+        "codes": codes if codes is not None else ["deny"],
         "reason": message,
         "provenance": list(decision.provenance) if decision is not None else [],
     }
-    if proposal_id:
-        detail["proposal_id"] = proposal_id
     return ToolMessage(
         content=f"Not authorized: {message}",
         name=str(call.get("name") or ""),

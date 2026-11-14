@@ -11,7 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **LangChain 1.x / Deep Agents middleware** (`theaios.agent_auth.adapters.langchain_agent.AgentAuthMiddleware`, extra `langchain-agent`): every tool call is authorized as the agent (`agent=` or the graph's name) for the run's user (`runtime.context.user_id` or `user=`; none = a service run). Denied calls do not run and the model gets an error `ToolMessage` (the run continues; decision and provenance in its `artifact`). An approval policy pauses the run with a LangGraph `interrupt`, resumed with `{"proposal_id", "approve", "by"}`; nothing is recorded until the call runs, and it is authorized again then. `delegated_by=` makes a sub-agent decide with the parent's attenuated resolution.
+- **LangChain 1.x / Deep Agents middleware** (`theaios.agent_auth.adapters.langchain_agent.AgentAuthMiddleware`, extra `langchain-agent`): every tool call is authorized as the agent (`agent=` or the graph's name) for the run's user (`runtime.context.user_id` or `user=`; none = a service run, and the denial says so). Denied calls do not run and the model gets an error `ToolMessage` (the run continues; decision and provenance in its `artifact`).
+- Sub-agents: `delegated_by=` decides with the parent's attenuated resolution; a Deep Agents sub-agent without it is refused. Hand-offs (`task`) are authorized as the action and as a delegation to the named sub-agent (profile + A2A allow), which closes Deep Agents' automatic `general-purpose` sub-agent unless you allow it.
+- The separation-of-duties record of an allowed call is released when the call did not run (refused by a check inside, or the run paused before it).
+
+### Changed (from the pre-release test, before 0.3.0 shipped)
+
+- An approval policy that matches refuses the call in agents (it paused the run in the first build, but an approval could be replayed: one approval, two runs). Approvals in agents go through theaios-guardrails' `FlowMiddleware`.
 
 ## [0.2.0] - 2026-11-13
 
