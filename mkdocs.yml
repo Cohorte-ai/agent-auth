@@ -38,6 +38,7 @@ nav:
   - Concepts:
       - Overview: concepts.md
       - Resolution: resolution.md
+      - LangChain Agents: langchain-agent.md
       - Approval Tiers: approval-tiers.md
       - Sessions: sessions.md
       - Delegation: delegation.md

@@ -35,6 +35,7 @@ When AI agents operate in your enterprise, the authorization question changes fr
 - **One identity per request (0.2)** — an agent acts for a user or as a service, never a silent mix of both
 - **Sub-agents and tokens (0.2)** — delegation by attenuation (a sub-agent never gets more than its parent) and short-lived, audience-bound tokens for tool servers
 - **Separation of duties (0.2)** — the same user cannot create and approve the same payment
+- **LangChain 1.x / Deep Agents middleware (0.3)** — every tool call authorized for the run's user; denials don't abort the run; approvals pause it. See [LangChain agents](docs/langchain-agent.md)
 - **Roles with inheritance** — define hierarchical permission sets via `extends`
 - **Agent profiles** — assign roles, allow/deny specific actions, scope to resource patterns
 - **Three-tier approval** — autonomous / soft / strong

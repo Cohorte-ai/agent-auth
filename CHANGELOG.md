@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - Unreleased
+
+### Added
+
+- **LangChain 1.x / Deep Agents middleware** (`theaios.agent_auth.adapters.langchain_agent.AgentAuthMiddleware`, extra `langchain-agent`): every tool call is authorized as the agent (`agent=` or the graph's name) for the run's user (`runtime.context.user_id` or `user=`; none = a service run). Denied calls do not run and the model gets an error `ToolMessage` (the run continues; decision and provenance in its `artifact`). An approval policy pauses the run with a LangGraph `interrupt`, resumed with `{"proposal_id", "approve", "by"}`; nothing is recorded until the call runs, and it is authorized again then. `delegated_by=` makes a sub-agent decide with the parent's attenuated resolution.
+
 ## [0.2.0] - 2026-11-13
 
 ### Added
