@@ -54,6 +54,7 @@ except ImportError as e:  # pragma: no cover - exercised only without the extra
     ) from e
 
 COMPONENT = "agent-auth"
+MAX_TOOL_NAME = 200
 
 Handler = Callable[[ToolCallRequest], "ToolMessage | Command[Any]"]
 AsyncHandler = Callable[[ToolCallRequest], Awaitable["ToolMessage | Command[Any]"]]
@@ -148,6 +149,13 @@ class AgentAuthMiddleware(AgentMiddleware):  # type: ignore[type-arg, unused-ign
         sees instead."""
         call = request.tool_call
         tool = str(call["name"])
+        if len(tool) > MAX_TOOL_NAME:  # no real tool has such a name; the model chose it
+            return _refusal(
+                call,
+                f"tool name longer than {MAX_TOOL_NAME} characters",
+                None,
+                codes=["bad_tool_name"],
+            )
         config = getattr(request.runtime, "config", None) or {}
         if (
             self._parent is None
@@ -304,7 +312,7 @@ def _refusal(
     }
     return ToolMessage(
         content=f"Not authorized: {message}",
-        name=str(call.get("name") or ""),
+        name=str(call.get("name") or "")[:MAX_TOOL_NAME],
         tool_call_id=str(call.get("id") or ""),
         status="error",
         artifact={"theaios": detail},

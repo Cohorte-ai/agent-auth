@@ -379,3 +379,43 @@ def test_a_forged_refusal_does_not_release_the_record() -> None:
         {"messages": [("user", "x")]}, {"configurable": {"thread_id": "t2"}}, context=Ctx("alice")
     )
     assert RAN == ["create_payment:inv-1"]  # it ran: alice may not approve it too
+
+
+# --- Round 3 findings (re-verification of a7fcd0b) ---------------------------------------------
+
+
+def test_a_tool_name_no_real_tool_has_is_refused() -> None:
+    model = Model(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "x" * 300_000, "args": {}, "id": "c1"}]),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_agent(
+        model,
+        TOOLS,
+        middleware=[AgentAuthMiddleware(_engine())],
+        context_schema=Ctx,
+        checkpointer=InMemorySaver(),
+        name="assistant",
+    )
+    out = agent.invoke({"messages": [("user", "x")]}, CFG, context=Ctx("alice"))
+    msg = _tools(out)[0]
+    assert msg.artifact["theaios"]["codes"] == ["bad_tool_name"] and len(msg.content) < 1000
+
+
+def test_audit_fields_are_capped(tmp_path: Path) -> None:
+    from theaios.agent_auth.audit import AuditLog
+    from theaios.agent_auth.types import AuthDecision, AuthRequest
+
+    log = AuditLog(str(tmp_path / "audit.jsonl"))
+    log.write(
+        AuthRequest(agent="a", user="u", action="get:/" + "p" * 300_000),
+        AuthDecision(allowed=False, reason="r" * 300_000),
+    )
+    import json as _json
+
+    entry = _json.loads((tmp_path / "audit.jsonl").read_text().splitlines()[0])
+    assert len(entry["action"]) <= 2000 and len(entry["reason"]) <= 2000
