@@ -137,7 +137,9 @@ class AuthEngine:
         if token_key is not None:
             tokens.check_keys(token_key)
         self._token_key = token_key
-        self._sod_done: dict[tuple[str, str, str], set[str]] = {}
+        # (rule, user, resource) -> action -> how many authorized calls hold it (released when
+        # a call did not run after all, see _sod_release).
+        self._sod_done: dict[tuple[str, str, str], dict[str, int]] = {}
         self._sod_lock = threading.Lock()
         self._warned_union: set[tuple[str, str]] = set()
 
@@ -733,8 +735,8 @@ class AuthEngine:
         for rule in self._config.separation_of_duties:
             if not any(denial_matches(request.action, a) for a in rule.actions):
                 continue
-            done = self._sod_done.get(self._sod_key(request, rule.name), set())
-            others = sorted(a for a in done if a != action)
+            done = self._sod_done.get(self._sod_key(request, rule.name), {})
+            others = sorted(a for a, n in done.items() if n > 0 and a != action)
             if others:
                 return (
                     f"Separation of duties ('{rule.name}'): '{request.user or 'service'}' "
@@ -746,7 +748,25 @@ class AuthEngine:
         action = request.action.casefold()
         for rule in self._config.separation_of_duties:
             if any(denial_matches(request.action, a) for a in rule.actions):
-                self._sod_done.setdefault(self._sod_key(request, rule.name), set()).add(action)
+                held = self._sod_done.setdefault(self._sod_key(request, rule.name), {})
+                held[action] = held.get(action, 0) + 1
+
+    def _sod_release(self, request: AuthRequest) -> None:
+        """Undo one record of an authorized request that did not run after all (another
+        check refused it, or the run paused): it must not block the user's next action."""
+        action = request.action.casefold()
+        with self._sod_lock:
+            for rule in self._config.separation_of_duties:
+                if not any(denial_matches(request.action, a) for a in rule.actions):
+                    continue
+                key = self._sod_key(request, rule.name)
+                held = self._sod_done.get(key, {})
+                if held.get(action, 0) > 1:
+                    held[action] -= 1
+                else:
+                    held.pop(action, None)
+                    if not held:
+                        self._sod_done.pop(key, None)
 
     def _condition_context(self, request: AuthRequest) -> dict[str, object]:
         """What A2A and approval conditions see: metadata keys at the top level and under

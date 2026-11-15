@@ -60,6 +60,8 @@ class AuditLog:
             "provenance": list(decision.provenance),
         }
 
+        # Requests can carry text an agent chose (a tool name, a resource): cap what is stored.
+        entry = {k: _cap(v) for k, v in entry.items()}
         if config:
             entry["config_name"] = config.metadata.name
             entry["config_version"] = config.version
@@ -96,3 +98,14 @@ class AuditLog:
     def clear(self) -> None:
         """Clear all audit log entries."""
         self._log.clear()
+
+
+MAX_FIELD = 2000
+
+
+def _cap(value: object) -> object:
+    if isinstance(value, str) and len(value) > MAX_FIELD:
+        return value[: MAX_FIELD - 1] + "…"
+    if isinstance(value, list):
+        return [_cap(v) for v in value[:100]]
+    return value
